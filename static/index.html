@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tunisia Outage Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #0b0f14; --bg-elevated: #10151b;
+    --card: #151b23; --card-hover: #1a212b; --border: #262f3a;
+    --text: #e8edf3; --muted: #8892a0; --muted-dim: #5b6470;
+    --brand: #a78bfa; --brand-ink: #1a1230;
+    --electricity: #eab308; --water: #38bdf8;
+    --danger: #f87171; --ok: #4ade80;
+    --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; padding: 0 var(--space-5) 60px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+
+  /* ---- header ---- */
+  header.app-header {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4);
+    flex-wrap: wrap;
+    padding: var(--space-5) 0 var(--space-4);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-5);
+  }
+  .brand-block { display: flex; align-items: center; gap: var(--space-3); }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--electricity), var(--water));
+    flex-shrink: 0;
+  }
+  .brand-text h1 {
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+    font-size: 1.25rem; font-weight: 700; margin: 0; letter-spacing: -0.01em;
+  }
+  .brand-text .subtitle {
+    color: var(--muted); font-size: 0.8rem; margin-top: 2px; max-width: 56ch; line-height: 1.45;
+  }
+  .cta-report {
+    background: var(--brand); color: var(--brand-ink); border: none;
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.88rem;
+    padding: 12px 20px; border-radius: var(--radius-md); cursor: pointer;
+    white-space: nowrap; min-height: 44px;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.15) inset;
+  }
+  .cta-report:hover { filter: brightness(1.08); }
+  .cta-report:focus-visible, button:focus-visible, .tab:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--brand); outline-offset: 2px;
+  }
+
+  /* ---- stats ---- */
+  .stats { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-5); }
+  .stat {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4); min-width: 138px;
+  }
+  .stat .num { font-family: 'Space Grotesk', sans-serif; font-size: 1.6rem; font-weight: 700; line-height: 1; }
+  .stat .num.electricity { color: var(--electricity); }
+  .stat .num.water { color: var(--water); }
+  .stat .label { color: var(--muted); font-size: 0.76rem; margin-top: 4px; }
+
+  /* ---- map ---- */
+  .map-wrap { margin-bottom: var(--space-5); }
+  #map { height: 360px; border-radius: var(--radius-lg); border: 1px solid var(--border); }
+  .map-legend {
+    display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: center;
+    font-size: 0.76rem; color: var(--muted); margin-top: var(--space-2); padding: 0 var(--space-1);
+  }
+  .legend-swatch { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .cluster-toggle-row { margin-top: var(--space-2); font-size: 0.8rem; }
+  .cluster-toggle { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
+  .cluster-disclaimer {
+    margin-top: 6px; color: var(--muted); font-size: 0.74rem;
+    border-left: 2px solid var(--border); padding-left: var(--space-2);
+  }
+
+  /* ---- tabs ---- */
+  .tabs { display: flex; gap: var(--space-1); margin-bottom: var(--space-4); border-bottom: 1px solid var(--border); }
+  .tab {
+    background: none; border: none; color: var(--muted); font-family: inherit;
+    padding: 12px 16px; min-height: 44px; cursor: pointer; font-size: 0.88rem;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--brand); font-weight: 600; }
+  .tab:hover { color: var(--text); }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .filters { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-4); }
+  label { font-size: 0.78rem; color: var(--muted); display: block; margin-bottom: 4px; }
+  label .req { color: var(--danger); }
+  select, input, textarea, button.secondary {
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.85rem; font-family: inherit;
+    min-height: 40px;
+  }
+  textarea { min-height: unset; }
+  button.secondary { cursor: pointer; }
+  button.secondary:hover { background: var(--card-hover); }
+
+  .grid { display: grid; gap: var(--space-3); max-width: 760px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: var(--space-4);
+  }
+  .card-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
+  .region { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: var(--text); }
+  .datetime { color: var(--muted); font-size: 0.78rem; }
+  .rtl { direction: rtl; text-align: right; }
+  .window { font-size: 0.88rem; color: var(--text); margin-bottom: var(--space-2); line-height: 1.5; }
+  .zones { font-size: 0.8rem; color: var(--muted); margin-bottom: var(--space-2); line-height: 1.6; }
+  .source { font-size: 0.78rem; color: var(--water); text-decoration: none; }
+  .source:hover { text-decoration: underline; }
+
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+  .badge.active { background: rgba(248,113,113,0.15); color: var(--danger); }
+  .badge.restored { background: rgba(74,222,128,0.15); color: var(--ok); }
+  .badge.electricity { background: rgba(234,179,8,0.15); color: var(--electricity); }
+  .badge.water { background: rgba(56,189,248,0.15); color: var(--water); }
+
+  .empty, .state-msg { color: var(--muted); font-size: 0.88rem; padding: var(--space-4) 0; }
+  .state-msg.error { color: var(--danger); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+
+  form.report { max-width: 480px; display: grid; gap: var(--space-3); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+  .msg { font-size: 0.85rem; margin-top: var(--space-2); }
+  .msg.ok { color: var(--ok); }
+  .msg.err { color: var(--danger); }
+
+  @media (max-width: 520px) {
+    body { padding: 0 var(--space-3) 40px; }
+    .row2 { grid-template-columns: 1fr; }
+    header.app-header { flex-direction: column; }
+    .cta-report { width: 100%; }
+  }
+</style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1>Tunisia Outage Tracker</h1>
+        <div class="subtitle">
+          Avis officiels STEG (électricité, scrapés depuis steg.com.tn) + signalements citoyens (électricité &amp; eau).
+          Ceci n'est pas un flux officiel SONEDE — la SONEDE ne publie pas d'avis structurés sur son site.
+        </div>
+      </div>
+    </div>
+    <button class="cta-report" type="button" id="cta-report">+ Signaler une coupure</button>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="map-wrap">
+    <div id="map"></div>
+    <div class="map-legend">
+      <span class="legend-swatch"><span class="legend-dot" style="background:var(--electricity)"></span> Électricité dominante</span>
+      <span class="legend-swatch"><span class="legend-dot" style="background:var(--water)"></span> Eau dominante</span>
+      <span class="legend-swatch"><span class="legend-dot" style="background:var(--muted-dim)"></span> Aucun signalement actif</span>
+      <span>Taille du cercle ≈ nombre de signalements actifs</span>
+    </div>
+    <div class="cluster-toggle-row">
+      <label class="cluster-toggle">
+        <input type="checkbox" id="toggle-clusters" disabled>
+        Afficher les groupes de réseau inférés (bêta)
+      </label>
+      <div class="cluster-disclaimer" id="cluster-disclaimer" role="status" hidden>
+        Regroupement statistique basé sur les coupures groupées dans les avis STEG —
+        ce n'est pas une carte d'infrastructure officielle vérifiée.
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Sections">
+    <button class="tab" role="tab" id="tab-official" aria-selected="true" aria-controls="panel-official" data-tab="official">Avis officiels STEG</button>
+    <button class="tab" role="tab" id="tab-reports" aria-selected="false" aria-controls="panel-reports" data-tab="reports" tabindex="-1">Signalements citoyens</button>
+    <button class="tab" role="tab" id="tab-form" aria-selected="false" aria-controls="panel-form" data-tab="form" tabindex="-1">Signaler une coupure</button>
+  </div>
+
+  <div class="panel active" id="panel-official" role="tabpanel" aria-labelledby="tab-official">
+    <div class="filters">
+      <div>
+        <label for="filter-region">Région</label>
+        <select id="filter-region"><option value="">Toutes les régions</option></select>
+      </div>
+    </div>
+    <div class="grid" id="official-list"><div class="empty">Chargement…</div></div>
+  </div>
+
+  <div class="panel" id="panel-reports" role="tabpanel" aria-labelledby="tab-reports" hidden>
+    <div class="filters">
+      <div>
+        <label for="filter-utility">Service</label>
+        <select id="filter-utility">
+          <option value="">Tous services</option>
+          <option value="electricity">⚡ Électricité</option>
+          <option value="water">💧 Eau</option>
+        </select>
+      </div>
+      <div>
+        <label for="filter-status">Statut</label>
+        <select id="filter-status">
+          <option value="">Tous statuts</option>
+          <option value="active">🔴 En cours</option>
+          <option value="restored">🟢 Rétabli</option>
+        </select>
+      </div>
+      <div>
+        <label for="filter-governorate">Gouvernorat</label>
+        <select id="filter-governorate"><option value="">Tous gouvernorats</option></select>
+      </div>
+    </div>
+    <div class="grid" id="reports-list"><div class="empty">Chargement…</div></div>
+  </div>
+
+  <div class="panel" id="panel-form" role="tabpanel" aria-labelledby="tab-form" hidden>
+    <form class="report" onsubmit="return submitReport(event)">
+      <div class="row2">
+        <div>
+          <label for="f-utility">Service <span class="req">*</span></label>
+          <select id="f-utility" required>
+            <option value="electricity">⚡ Électricité</option>
+            <option value="water">💧 Eau</option>
+          </select>
+        </div>
+        <div>
+          <label for="f-status">État <span class="req">*</span></label>
+          <select id="f-status" required onchange="toggleEndedAt()">
+            <option value="active">🔴 Toujours coupé</option>
+            <option value="restored">🟢 Vient de revenir</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label for="f-governorate">Gouvernorat <span class="req">*</span></label>
+        <select id="f-governorate" required></select>
+      </div>
+      <div class="row2">
+        <div>
+          <label for="f-delegation">Délégation (optionnel)</label>
+          <input id="f-delegation" placeholder="ex: La Marsa">
+        </div>
+        <div>
+          <label for="f-zone">Quartier / zone (optionnel)</label>
+          <input id="f-zone" placeholder="ex: Marsa Corniche">
+        </div>
+      </div>
+      <div class="row2">
+        <div>
+          <label for="f-started">Début (optionnel)</label>
+          <input type="datetime-local" id="f-started">
+        </div>
+        <div id="ended-wrap" style="display:none">
+          <label for="f-ended">Rétabli à <span class="req">*</span></label>
+          <input type="datetime-local" id="f-ended">
+        </div>
+      </div>
+      <div>
+        <label for="f-comment">Commentaire (optionnel)</label>
+        <textarea id="f-comment" rows="2"></textarea>
+      </div>
+      <button type="submit" class="cta-report" style="justify-self:start">Envoyer le signalement</button>
+      <div class="msg" id="form-msg" role="status"></div>
+    </form>
+  </div>
+
+<script>
+const API = "/api";
+let map, markerLayer, clusterLayer;
+const CLUSTER_PALETTE = [
+  "#eab308", "#38bdf8", "#a78bfa", "#f87171", "#4ade80", "#fb923c",
+  "#22d3ee", "#e879f9", "#facc15", "#818cf8", "#34d399", "#fb7185",
+];
+
+// STEG's known macro-regions (as observed in their notices) with French labels.
+// Using exact values keeps filtering unambiguous (e.g. "Nord" vs "Nord-Ouest").
+const REGION_OPTIONS = [
+  { value: "جهة تونس الكبرى", label: "Grand Tunis" },
+  { value: "جهة الشمال", label: "Nord" },
+  { value: "جهة الشمال الغربي", label: "Nord-Ouest" },
+  { value: "جهة الوسط", label: "Centre" },
+  { value: "ولاية صفاقس", label: "Sfax" },
+  { value: "جهة الجنوب", label: "Sud" },
+  { value: "جهة الجنوب الغربي", label: "Sud-Ouest" },
+];
+
+function esc(s) {
+  if (s === null || s === undefined) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ---------- tabs (accessible: buttons, roving tabindex, arrow-key nav) ----------
+const tabEls = Array.from(document.querySelectorAll('.tab'));
+
+function activateTab(tab) {
+  tabEls.forEach(t => {
+    const selected = t === tab;
+    t.setAttribute('aria-selected', String(selected));
+    t.tabIndex = selected ? 0 : -1;
+    document.getElementById('panel-' + t.dataset.tab).hidden = !selected;
+    document.getElementById('panel-' + t.dataset.tab).classList.toggle('active', selected);
+  });
+  tab.focus();
+}
+
+tabEls.forEach((tab, i) => {
+  tab.addEventListener('click', () => activateTab(tab));
+  tab.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight') activateTab(tabEls[(i + 1) % tabEls.length]);
+    if (e.key === 'ArrowLeft') activateTab(tabEls[(i - 1 + tabEls.length) % tabEls.length]);
+  });
+});
+
+document.getElementById('cta-report').addEventListener('click', () => {
+  activateTab(document.getElementById('tab-form'));
+});
+
+function toggleEndedAt() {
+  const status = document.getElementById("f-status").value;
+  document.getElementById("ended-wrap").style.display = status === "restored" ? "block" : "none";
+}
+
+// ---------- governorates + map ----------
+async function initGovernorates() {
+  const govs = await fetch(`${API}/governorates`).then(r => r.json());
+  const govSelect = document.getElementById("f-governorate");
+  const filterSelect = document.getElementById("filter-governorate");
+  govs.forEach(g => {
+    govSelect.insertAdjacentHTML("beforeend", `<option value="${esc(g.name)}">${esc(g.name)}</option>`);
+    filterSelect.insertAdjacentHTML("beforeend", `<option value="${esc(g.name)}">${esc(g.name)}</option>`);
+  });
+
+  const regionSelect = document.getElementById("filter-region");
+  REGION_OPTIONS.forEach(r => {
+    regionSelect.insertAdjacentHTML("beforeend", `<option value="${esc(r.value)}">${esc(r.label)}</option>`);
+  });
+
+  map = L.map("map", { scrollWheelZoom: false }).setView([34.5, 9.5], 6);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: "&copy; OpenStreetMap &copy; CARTO",
+    subdomains: "abcd", maxZoom: 19,
+  }).addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+  clusterLayer = L.layerGroup(); // not added to map yet -- off by default
+  document.getElementById("toggle-clusters").disabled = false;
+  window._governorates = govs;
+  await refreshMap();
+}
+
+async function refreshMap() {
+  let stats;
+  try {
+    stats = await fetch(`${API}/stats`).then(r => r.json());
+  } catch (e) {
+    return; // map just stays as-is; stats panel below shows its own error state
+  }
+  const byGov = {};
+  (stats.by_governorate || []).forEach(row => {
+    byGov[row.governorate] = byGov[row.governorate] || { electricity: 0, water: 0 };
+    byGov[row.governorate][row.utility] = row.c;
+  });
+
+  markerLayer.clearLayers();
+  window._governorates.forEach(g => {
+    const counts = byGov[g.name] || { electricity: 0, water: 0 };
+    const total = counts.electricity + counts.water;
+    if (total === 0) {
+      // Baseline marker so a quiet governorate reads as "no active reports",
+      // not as "no coverage at all".
+      L.circleMarker([g.lat, g.lng], {
+        radius: 4, color: "#5b6470", fillColor: "#5b6470", fillOpacity: 0.5, weight: 0,
+      }).bindPopup(`<b>${esc(g.name)}</b><br>Aucun signalement actif`).addTo(markerLayer);
+      return;
+    }
+    const color = counts.electricity >= counts.water ? "#eab308" : "#38bdf8";
+    const radius = 8 + Math.min(total, 20) * 2;
+    L.circleMarker([g.lat, g.lng], {
+      radius, color, fillColor: color, fillOpacity: 0.45, weight: 1,
+    }).bindPopup(`<b>${esc(g.name)}</b><br>⚡ ${counts.electricity} · 💧 ${counts.water}`)
+      .addTo(markerLayer);
+  });
+
+  renderStats(stats);
+}
+
+async function loadClusters() {
+  const myGeneration = clusterToggleGeneration;
+  let body;
+  try {
+    const resp = await fetch(`${API}/clusters`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    body = await resp.json();
+  } catch (e) {
+    return;
+  }
+  if (myGeneration !== clusterToggleGeneration) return; // superseded by a newer toggle while fetching
+  clusterLayer.clearLayers();
+  if (body.insufficient_data || !body.data.length) {
+    return;
+  }
+  body.data.forEach(point => {
+    const color = CLUSTER_PALETTE[point.cluster_id % CLUSTER_PALETTE.length];
+    const opacity = 0.25 + 0.65 * Math.max(0, Math.min(1, point.stability));
+    L.circleMarker([point.lat, point.lng], {
+      radius: 6, color, fillColor: color, fillOpacity: opacity, weight: 1,
+    }).bindTooltip(
+      `Cluster #${esc(point.cluster_id)} — stabilité ${esc((point.stability * 100).toFixed(0))}%`
+    ).addTo(clusterLayer);
+  });
+}
+
+let clusterToggleGeneration = 0;
+
+document.getElementById("toggle-clusters").addEventListener("change", async (e) => {
+  const disclaimer = document.getElementById("cluster-disclaimer");
+  const myGeneration = ++clusterToggleGeneration;
+  if (e.target.checked) {
+    disclaimer.hidden = false;
+    await loadClusters();
+    if (myGeneration !== clusterToggleGeneration) return; // a newer toggle happened while we were awaiting
+    if (document.getElementById("toggle-clusters").checked) {
+      clusterLayer.addTo(map);
+    }
+  } else {
+    disclaimer.hidden = true;
+    map.removeLayer(clusterLayer);
+  }
+});
+
+function renderStats(stats) {
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><div class="num electricity">${stats.active_electricity}</div><div class="label">⚡ Coupures actives</div></div>
+    <div class="stat"><div class="num water">${stats.active_water}</div><div class="label">💧 Coupures actives</div></div>
+    <div class="stat"><div class="num">${stats.total_reports}</div><div class="label">Signalements totaux</div></div>
+    <div class="stat"><div class="num">${stats.official_notices}</div><div class="label">Avis officiels STEG</div></div>
+  `;
+}
+
+// ---------- official notices ----------
+async function loadOfficial() {
+  const el = document.getElementById("official-list");
+  el.innerHTML = `<div class="empty">Chargement…</div>`;
+  const region = document.getElementById("filter-region").value;
+  const url = new URL(`${API}/official`, location.origin);
+  if (region) url.searchParams.set("region", region);
+
+  let data;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    el.innerHTML = errorState("Impossible de charger les avis officiels.", "loadOfficial()");
+    return;
+  }
+
+  if (!data.notices.length) {
+    el.innerHTML = `<div class="empty">Aucun avis officiel en base. Lancez import_official.py pour en récupérer.</div>`;
+    return;
+  }
+  el.innerHTML = data.notices.map(n => {
+    let zonesHtml;
+    if (n.subregions && n.subregions.length) {
+      zonesHtml = n.subregions.map(s => `<b>${esc(s.name || "—")}</b>: ${esc((s.zones||[]).join(", "))}`).join("<br>");
+    } else {
+      zonesHtml = esc((n.zones||[]).join(", "));
+    }
+    return `
+      <div class="card">
+        <div class="card-head">
+          <span class="region rtl">${esc(n.region || "—")}</span>
+          <span class="datetime mono">${esc(n.notice_date||"")} · ${esc(n.notice_time||"")}</span>
+        </div>
+        <div class="window rtl">${esc(n.time_window_sentence||"")}</div>
+        <div class="zones rtl">${zonesHtml}</div>
+        <a class="source" href="${esc(n.url)}" target="_blank" rel="noopener">Voir l'avis officiel STEG →</a>
+      </div>`;
+  }).join("");
+}
+
+// ---------- crowdsourced reports ----------
+async function loadReports() {
+  const el = document.getElementById("reports-list");
+  el.innerHTML = `<div class="empty">Chargement…</div>`;
+  const utility = document.getElementById("filter-utility").value;
+  const status = document.getElementById("filter-status").value;
+  const governorate = document.getElementById("filter-governorate").value;
+  const url = new URL(`${API}/reports`, location.origin);
+  if (utility) url.searchParams.set("utility", utility);
+  if (status) url.searchParams.set("status", status);
+  if (governorate) url.searchParams.set("governorate", governorate);
+
+  let data;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    el.innerHTML = errorState("Impossible de charger les signalements.", "loadReports()");
+    return;
+  }
+
+  if (!data.reports.length) {
+    el.innerHTML = `<div class="empty">Aucun signalement pour ces filtres.</div>`;
+    return;
+  }
+  el.innerHTML = data.reports.map(r => `
+    <div class="card">
+      <div class="card-head">
+        <span>
+          <span class="badge ${r.utility}">${r.utility === "electricity" ? "⚡ Électricité" : "💧 Eau"}</span>
+          <span class="badge ${r.status}">${r.status === "active" ? "En cours" : "Rétabli"}</span>
+        </span>
+        <span class="datetime mono">${new Date(r.created_at).toLocaleString("fr-TN")}</span>
+      </div>
+      <div><b>${esc(r.governorate)}</b>${r.delegation ? " · " + esc(r.delegation) : ""}${r.zone_text ? " · " + esc(r.zone_text) : ""}</div>
+      ${r.comment ? `<div class="zones">${esc(r.comment)}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+function errorState(message, retryFnCall) {
+  return `<div class="state-msg error">
+    <span>⚠️ ${esc(message)}</span>
+    <button class="secondary" onclick="${retryFnCall}">Réessayer</button>
+  </div>`;
+}
+
+// ---------- report submission ----------
+async function submitReport(ev) {
+  ev.preventDefault();
+  const msg = document.getElementById("form-msg");
+  msg.textContent = "";
+  msg.className = "msg";
+
+  const body = {
+    utility: document.getElementById("f-utility").value,
+    status: document.getElementById("f-status").value,
+    governorate: document.getElementById("f-governorate").value,
+    delegation: document.getElementById("f-delegation").value || null,
+    zone_text: document.getElementById("f-zone").value || null,
+    comment: document.getElementById("f-comment").value || "",
+    started_at: document.getElementById("f-started").value || null,
+    ended_at: document.getElementById("f-ended").value || null,
+  };
+
+  let resp;
+  try {
+    resp = await fetch(`${API}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    msg.textContent = "Erreur réseau — vérifiez votre connexion et réessayez.";
+    msg.className = "msg err";
+    return false;
+  }
+
+  if (resp.ok) {
+    msg.textContent = "Signalement envoyé, merci !";
+    msg.className = "msg ok";
+    document.getElementById("f-comment").value = "";
+    await loadReports();
+    await refreshMap();
+  } else {
+    const err = await resp.json().catch(() => ({}));
+    msg.textContent = "Erreur : " + (err.detail || resp.statusText);
+    msg.className = "msg err";
+  }
+  return false;
+}
+
+// ---------- boot ----------
+(async function boot() {
+  await initGovernorates();
+  await loadOfficial();
+  await loadReports();
+  document.getElementById("filter-region").addEventListener("change", loadOfficial);
+  document.getElementById("filter-utility").addEventListener("change", loadReports);
+  document.getElementById("filter-status").addEventListener("change", loadReports);
+  document.getElementById("filter-governorate").addEventListener("change", loadReports);
+})();
+</script>
+</body>
+</html>
