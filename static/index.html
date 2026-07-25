@@ -80,7 +80,7 @@
     box-shadow: 0 8px 20px rgba(93, 135, 255, 0.35);
   }
   .cta-report:hover { background: var(--primary-dark); }
-  .cta-report:focus-visible, button:focus-visible, .tab:focus-visible, select:focus-visible, input:focus-visible {
+  .cta-report:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible {
     outline: 2px solid var(--primary); outline-offset: 2px;
   }
 
@@ -101,36 +101,37 @@
   .stat .num { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 1.5rem; font-weight: 800; line-height: 1; }
   .stat .label { color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
 
-  /* ---- map ---- */
-  .map-wrap { margin-bottom: var(--space-5); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-4); box-shadow: var(--shadow-card); }
-  #map { height: 360px; border-radius: var(--radius-md); border: 1px solid var(--border); }
-  .map-legend {
-    display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: center;
-    font-size: 0.8rem; color: var(--text-dim); margin-top: var(--space-3); padding: 0 var(--space-1);
+  /* ---- dashboard layout: wide main column + narrow side column ---- */
+  .dashboard-layout { display: grid; grid-template-columns: 1.7fr 1fr; gap: var(--space-4); align-items: start; }
+  .main-col, .side-col { display: grid; gap: var(--space-4); min-width: 0; }
+  @media (max-width: 900px) {
+    .dashboard-layout { grid-template-columns: 1fr; }
   }
-  .legend-swatch { display: inline-flex; align-items: center; gap: 6px; }
-  .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .cluster-toggle-row { margin-top: var(--space-3); font-size: 0.84rem; }
+
+  .panel-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: var(--space-4); box-shadow: var(--shadow-card);
+  }
+  .panel-card h2 {
+    font-family: 'Plus Jakarta Sans', sans-serif; font-size: 1.02rem; font-weight: 800; margin: 0 0 var(--space-3);
+  }
+
+  /* ---- map (small square, side column) ---- */
+  #map { width: 100%; aspect-ratio: 1 / 1; border-radius: var(--radius-md); border: 1px solid var(--border); }
+  .map-legend {
+    display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;
+    font-size: 0.72rem; color: var(--text-dim); margin-top: var(--space-3);
+  }
+  .legend-swatch { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .cluster-toggle-row { margin-top: var(--space-3); font-size: 0.78rem; }
   .cluster-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-dim); cursor: pointer; }
   .cluster-disclaimer {
-    margin-top: 8px; color: var(--text-dim); font-size: 0.78rem;
+    margin-top: 8px; color: var(--text-dim); font-size: 0.74rem;
     background: var(--primary-soft); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
   }
   .cluster-link { color: var(--primary); text-decoration: none; font-weight: 600; }
   .cluster-link:hover { text-decoration: underline; }
-
-  /* ---- tabs ---- */
-  .tabs { display: flex; gap: var(--space-1); margin-bottom: var(--space-4); }
-  .tab {
-    background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); font-family: 'Plus Jakarta Sans', sans-serif;
-    padding: 12px 20px; min-height: 44px; cursor: pointer; font-size: 0.88rem; font-weight: 600;
-    border-radius: var(--radius-pill);
-  }
-  .tab[aria-selected="true"] { color: var(--primary-ink); background: var(--primary); border-color: var(--primary); }
-  .tab:hover:not([aria-selected="true"]) { background: var(--surface-hover); }
-
-  .panel { display: none; }
-  .panel.active { display: block; }
 
   .filters { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-4); }
   label { font-size: 0.8rem; color: var(--text-dim); display: block; margin-bottom: 5px; font-weight: 500; }
@@ -145,12 +146,14 @@
   button.secondary { cursor: pointer; color: var(--primary); font-weight: 600; }
   button.secondary:hover { background: var(--primary-soft); }
 
-  .grid { display: grid; gap: var(--space-3); max-width: 760px; }
+  .grid { display: grid; gap: var(--space-3); }
+  .grid.compact { gap: var(--space-2); }
   .card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
-    padding: var(--space-4); box-shadow: var(--shadow-card); transition: box-shadow 0.15s ease;
+    background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4); transition: border-color 0.15s ease;
   }
-  .card:hover { box-shadow: var(--shadow-card-hover); }
+  .card:hover { border-color: var(--primary-soft); }
+  .card.compact { padding: var(--space-2) var(--space-3); }
   .card-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
   .region { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; color: var(--text); }
   .datetime { color: var(--muted); font-size: 0.78rem; }
@@ -166,7 +169,7 @@
   .badge.electricity { background: var(--electricity-soft); color: #c67d05; }
   .badge.water { background: var(--water-soft); color: #0b7dd1; }
 
-  .empty, .state-msg { color: var(--muted); font-size: 0.88rem; padding: var(--space-4) 0; }
+  .empty, .state-msg { color: var(--muted); font-size: 0.86rem; padding: var(--space-3) 0; }
   .state-msg.error { color: #e0553a; display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 
   form.report { max-width: 480px; display: grid; gap: var(--space-3); }
@@ -230,66 +233,68 @@
 
   <div class="stats" id="stats"></div>
 
-  <div class="map-wrap">
-    <div id="map"></div>
-    <div class="map-legend">
-      <span class="legend-swatch"><span class="legend-dot" style="background:var(--electricity)"></span> Électricité dominante</span>
-      <span class="legend-swatch"><span class="legend-dot" style="background:var(--water)"></span> Eau dominante</span>
-      <span class="legend-swatch"><span class="legend-dot" style="background:var(--muted)"></span> Aucun signalement actif</span>
-      <span>Taille du cercle ≈ nombre de signalements actifs</span>
-    </div>
-    <div class="cluster-toggle-row">
-      <label class="cluster-toggle">
-        <input type="checkbox" id="toggle-clusters" disabled>
-        Afficher les groupes de réseau inférés (bêta)
-      </label>
-      <div class="cluster-disclaimer" id="cluster-disclaimer" role="status" hidden>
-        Regroupement statistique basé sur les coupures groupées dans les avis STEG —
-        ce n'est pas une carte d'infrastructure officielle vérifiée.
-        Détails et graphe complet sur la <a class="cluster-link" href="/model.html">page modèle →</a>
+  <div class="dashboard-layout">
+    <div class="main-col">
+      <div class="panel-card">
+        <h2>Avis officiels STEG</h2>
+        <div class="filters">
+          <div>
+            <label for="filter-region">Région</label>
+            <select id="filter-region"><option value="">Toutes les régions</option></select>
+          </div>
+        </div>
+        <div class="grid" id="official-list"><div class="empty">Chargement…</div></div>
       </div>
     </div>
-  </div>
 
-  <div class="tabs" role="tablist" aria-label="Sections">
-    <button class="tab" role="tab" id="tab-official" aria-selected="true" aria-controls="panel-official" data-tab="official">Avis officiels STEG</button>
-    <button class="tab" role="tab" id="tab-reports" aria-selected="false" aria-controls="panel-reports" data-tab="reports" tabindex="-1">Signalements citoyens</button>
-  </div>
+    <div class="side-col">
+      <div class="panel-card">
+        <h2>Carte</h2>
+        <div id="map"></div>
+        <div class="map-legend">
+          <span class="legend-swatch"><span class="legend-dot" style="background:var(--electricity)"></span> Électricité</span>
+          <span class="legend-swatch"><span class="legend-dot" style="background:var(--water)"></span> Eau</span>
+          <span class="legend-swatch"><span class="legend-dot" style="background:var(--muted)"></span> Aucun signalement</span>
+        </div>
+        <div class="cluster-toggle-row">
+          <label class="cluster-toggle">
+            <input type="checkbox" id="toggle-clusters" disabled>
+            Groupes de réseau inférés (bêta)
+          </label>
+          <div class="cluster-disclaimer" id="cluster-disclaimer" role="status" hidden>
+            Regroupement statistique basé sur les coupures groupées dans les avis STEG —
+            pas une carte d'infrastructure officielle. Détails sur la <a class="cluster-link" href="/model.html">page modèle →</a>
+          </div>
+        </div>
+      </div>
 
-  <div class="panel active" id="panel-official" role="tabpanel" aria-labelledby="tab-official">
-    <div class="filters">
-      <div>
-        <label for="filter-region">Région</label>
-        <select id="filter-region"><option value="">Toutes les régions</option></select>
+      <div class="panel-card">
+        <h2>Signalements citoyens</h2>
+        <div class="filters">
+          <div>
+            <label for="filter-utility">Service</label>
+            <select id="filter-utility">
+              <option value="">Tous services</option>
+              <option value="electricity">⚡ Électricité</option>
+              <option value="water">💧 Eau</option>
+            </select>
+          </div>
+          <div>
+            <label for="filter-status">Statut</label>
+            <select id="filter-status">
+              <option value="">Tous statuts</option>
+              <option value="active">🔴 En cours</option>
+              <option value="restored">🟢 Rétabli</option>
+            </select>
+          </div>
+          <div>
+            <label for="filter-governorate">Gouvernorat</label>
+            <select id="filter-governorate"><option value="">Tous gouvernorats</option></select>
+          </div>
+        </div>
+        <div class="grid compact" id="reports-list"><div class="empty">Chargement…</div></div>
       </div>
     </div>
-    <div class="grid" id="official-list"><div class="empty">Chargement…</div></div>
-  </div>
-
-  <div class="panel" id="panel-reports" role="tabpanel" aria-labelledby="tab-reports" hidden>
-    <div class="filters">
-      <div>
-        <label for="filter-utility">Service</label>
-        <select id="filter-utility">
-          <option value="">Tous services</option>
-          <option value="electricity">⚡ Électricité</option>
-          <option value="water">💧 Eau</option>
-        </select>
-      </div>
-      <div>
-        <label for="filter-status">Statut</label>
-        <select id="filter-status">
-          <option value="">Tous statuts</option>
-          <option value="active">🔴 En cours</option>
-          <option value="restored">🟢 Rétabli</option>
-        </select>
-      </div>
-      <div>
-        <label for="filter-governorate">Gouvernorat</label>
-        <select id="filter-governorate"><option value="">Tous gouvernorats</option></select>
-      </div>
-    </div>
-    <div class="grid" id="reports-list"><div class="empty">Chargement…</div></div>
   </div>
 
   <footer class="app-footer">Tunisia Outage Tracker — données non officielles, à titre indicatif uniquement</footer>
@@ -376,28 +381,6 @@ function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// ---------- tabs (accessible: buttons, roving tabindex, arrow-key nav) ----------
-const tabEls = Array.from(document.querySelectorAll('.tab'));
-
-function activateTab(tab) {
-  tabEls.forEach(t => {
-    const selected = t === tab;
-    t.setAttribute('aria-selected', String(selected));
-    t.tabIndex = selected ? 0 : -1;
-    document.getElementById('panel-' + t.dataset.tab).hidden = !selected;
-    document.getElementById('panel-' + t.dataset.tab).classList.toggle('active', selected);
-  });
-  tab.focus();
-}
-
-tabEls.forEach((tab, i) => {
-  tab.addEventListener('click', () => activateTab(tab));
-  tab.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowRight') activateTab(tabEls[(i + 1) % tabEls.length]);
-    if (e.key === 'ArrowLeft') activateTab(tabEls[(i - 1 + tabEls.length) % tabEls.length]);
-  });
-});
-
 const reportModal = document.getElementById("report-modal");
 const modalCloseBtn = document.getElementById("modal-close");
 let lastFocusedBeforeModal = null;
@@ -476,6 +459,11 @@ async function initGovernorates() {
   document.getElementById("toggle-clusters").disabled = false;
   window._governorates = govs;
   await refreshMap();
+
+  // The map sits in the narrow side column, whose width changes at the
+  // 900px breakpoint (two columns -> one) -- Leaflet caches its container
+  // size at init time, so nudge it to remeasure after layout shifts.
+  window.addEventListener("resize", () => { if (map) map.invalidateSize(); });
 }
 
 async function refreshMap() {
@@ -499,12 +487,12 @@ async function refreshMap() {
       // Baseline marker so a quiet governorate reads as "no active reports",
       // not as "no coverage at all".
       L.circleMarker([g.lat, g.lng], {
-        radius: 4, color: "#8992a3", fillColor: "#8992a3", fillOpacity: 0.5, weight: 0,
+        radius: 3, color: "#8992a3", fillColor: "#8992a3", fillOpacity: 0.5, weight: 0,
       }).bindPopup(`<b>${esc(g.name)}</b><br>Aucun signalement actif`).addTo(markerLayer);
       return;
     }
     const color = counts.electricity >= counts.water ? "#ffae1f" : "#2aa1ff";
-    const radius = 8 + Math.min(total, 20) * 2;
+    const radius = 5 + Math.min(total, 20) * 1.1;
     L.circleMarker([g.lat, g.lng], {
       radius, color, fillColor: color, fillOpacity: 0.45, weight: 1,
     }).bindPopup(`<b>${esc(g.name)}</b><br>⚡ ${counts.electricity} · 💧 ${counts.water}`)
@@ -533,7 +521,7 @@ async function loadClusters() {
     const color = CLUSTER_PALETTE[point.cluster_id % CLUSTER_PALETTE.length];
     const opacity = 0.25 + 0.65 * Math.max(0, Math.min(1, point.stability));
     L.circleMarker([point.lat, point.lng], {
-      radius: 6, color, fillColor: color, fillOpacity: opacity, weight: 1,
+      radius: 5, color, fillColor: color, fillOpacity: opacity, weight: 1,
     }).bindTooltip(
       `Cluster #${esc(point.cluster_id)} — stabilité ${esc((point.stability * 100).toFixed(0))}%`
     ).addTo(clusterLayer);
@@ -636,7 +624,7 @@ async function loadReports() {
     return;
   }
   el.innerHTML = data.reports.map(r => `
-    <div class="card">
+    <div class="card compact">
       <div class="card-head">
         <span>
           <span class="badge ${r.utility}">${r.utility === "electricity" ? "⚡ Électricité" : "💧 Eau"}</span>
