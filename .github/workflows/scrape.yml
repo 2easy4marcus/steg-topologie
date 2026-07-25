@@ -1,0 +1,26 @@
+name: Scrape and recluster
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"  # every 6 hours, at minute 0 -- scrape
+    - cron: "30 2 * * *"  # once daily at 02:30 UTC -- recluster
+  workflow_dispatch: {}    # allow manual runs from the Actions tab
+
+jobs:
+  scrape:
+    if: github.event.schedule == '0 */6 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/internal/scrape
+        run: |
+          curl -sf -X POST "${{ secrets.APP_URL }}/api/internal/scrape" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
+
+  recluster:
+    if: github.event.schedule == '30 2 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/internal/recluster
+        run: |
+          curl -sf -X POST "${{ secrets.APP_URL }}/api/internal/recluster" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
