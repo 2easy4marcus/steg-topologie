@@ -406,6 +406,13 @@ def latest_cluster_run():
         return {"run_date": run_date, "rows": rows}
 
 
+def count_cluster_run_dates() -> int:
+    """Total distinct run_dates that have EVER existed in clusters -- unbounded,
+    unlike cluster_run_dates() which is a bounded lookback for stability scoring."""
+    with get_conn() as conn:
+        return conn.execute("SELECT COUNT(DISTINCT run_date) c FROM clusters").fetchone()["c"]
+
+
 def cluster_run_dates(before: str, limit: int):
     with get_conn() as conn:
         rows = conn.execute(

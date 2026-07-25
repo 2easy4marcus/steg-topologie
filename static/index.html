@@ -10,12 +10,12 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   :root {
-    --bg: #0b0f14; --bg-elevated: #10151b;
-    --card: #151b23; --card-hover: #1a212b; --border: #262f3a;
-    --text: #e8edf3; --muted: #8892a0; --muted-dim: #5b6470;
-    --brand: #a78bfa; --brand-ink: #1a1230;
-    --electricity: #eab308; --water: #38bdf8;
-    --danger: #f87171; --ok: #4ade80;
+    --bg: #0c0c0a; --bg-elevated: #131310;
+    --card: #17160f; --card-hover: #1c1b13; --border: #2c2c26;
+    --text: #f0eee6; --muted: #9a9890; --muted-dim: #5f5d54;
+    --brand: #f0a83c; --brand-ink: #2e1a03;
+    --electricity: #eab308; --water: #4fa3c4;
+    --danger: #f87171; --ok: #5bb974;
     --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
     --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
   }
@@ -149,6 +149,23 @@
     header.app-header { flex-direction: column; }
     .cta-report { width: 100%; }
   }
+
+  .modal-backdrop:not([hidden]) {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    padding: var(--space-4); z-index: 100;
+  }
+  .modal-card {
+    background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: var(--space-5); max-width: 520px; width: 100%; max-height: 90vh; overflow-y: auto;
+  }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-4); }
+  .modal-title { font-family: 'Space Grotesk', sans-serif; font-size: 1.1rem; font-weight: 700; margin: 0; }
+  .modal-close {
+    background: none; border: none; color: var(--muted); font-size: 1.4rem; line-height: 1; cursor: pointer;
+    padding: 4px 8px; border-radius: var(--radius-sm); min-height: 40px;
+  }
+  .modal-close:hover { background: var(--card-hover); color: var(--text); }
 </style>
 </head>
 <body>
@@ -191,7 +208,6 @@
   <div class="tabs" role="tablist" aria-label="Sections">
     <button class="tab" role="tab" id="tab-official" aria-selected="true" aria-controls="panel-official" data-tab="official">Avis officiels STEG</button>
     <button class="tab" role="tab" id="tab-reports" aria-selected="false" aria-controls="panel-reports" data-tab="reports" tabindex="-1">Signalements citoyens</button>
-    <button class="tab" role="tab" id="tab-form" aria-selected="false" aria-controls="panel-form" data-tab="form" tabindex="-1">Signaler une coupure</button>
   </div>
 
   <div class="panel active" id="panel-official" role="tabpanel" aria-labelledby="tab-official">
@@ -230,55 +246,61 @@
     <div class="grid" id="reports-list"><div class="empty">Chargement…</div></div>
   </div>
 
-  <div class="panel" id="panel-form" role="tabpanel" aria-labelledby="tab-form" hidden>
-    <form class="report" onsubmit="return submitReport(event)">
-      <div class="row2">
-        <div>
-          <label for="f-utility">Service <span class="req">*</span></label>
-          <select id="f-utility" required>
-            <option value="electricity">⚡ Électricité</option>
-            <option value="water">💧 Eau</option>
-          </select>
-        </div>
-        <div>
-          <label for="f-status">État <span class="req">*</span></label>
-          <select id="f-status" required onchange="toggleEndedAt()">
-            <option value="active">🔴 Toujours coupé</option>
-            <option value="restored">🟢 Vient de revenir</option>
-          </select>
-        </div>
+  <div class="modal-backdrop" id="report-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="report-modal-title">
+      <div class="modal-head">
+        <h2 id="report-modal-title" class="modal-title">Signaler une coupure</h2>
+        <button type="button" class="modal-close" id="modal-close" aria-label="Fermer">&times;</button>
       </div>
-      <div>
-        <label for="f-governorate">Gouvernorat <span class="req">*</span></label>
-        <select id="f-governorate" required></select>
-      </div>
-      <div class="row2">
-        <div>
-          <label for="f-delegation">Délégation (optionnel)</label>
-          <input id="f-delegation" placeholder="ex: La Marsa">
+      <form class="report" onsubmit="return submitReport(event)">
+        <div class="row2">
+          <div>
+            <label for="f-utility">Service <span class="req">*</span></label>
+            <select id="f-utility" required>
+              <option value="electricity">⚡ Électricité</option>
+              <option value="water">💧 Eau</option>
+            </select>
+          </div>
+          <div>
+            <label for="f-status">État <span class="req">*</span></label>
+            <select id="f-status" required onchange="toggleEndedAt()">
+              <option value="active">🔴 Toujours coupé</option>
+              <option value="restored">🟢 Vient de revenir</option>
+            </select>
+          </div>
         </div>
         <div>
-          <label for="f-zone">Quartier / zone (optionnel)</label>
-          <input id="f-zone" placeholder="ex: Marsa Corniche">
+          <label for="f-governorate">Gouvernorat <span class="req">*</span></label>
+          <select id="f-governorate" required></select>
         </div>
-      </div>
-      <div class="row2">
+        <div class="row2">
+          <div>
+            <label for="f-delegation">Délégation (optionnel)</label>
+            <input id="f-delegation" placeholder="ex: La Marsa">
+          </div>
+          <div>
+            <label for="f-zone">Quartier / zone (optionnel)</label>
+            <input id="f-zone" placeholder="ex: Marsa Corniche">
+          </div>
+        </div>
+        <div class="row2">
+          <div>
+            <label for="f-started">Début (optionnel)</label>
+            <input type="datetime-local" id="f-started">
+          </div>
+          <div id="ended-wrap" style="display:none">
+            <label for="f-ended">Rétabli à <span class="req">*</span></label>
+            <input type="datetime-local" id="f-ended">
+          </div>
+        </div>
         <div>
-          <label for="f-started">Début (optionnel)</label>
-          <input type="datetime-local" id="f-started">
+          <label for="f-comment">Commentaire (optionnel)</label>
+          <textarea id="f-comment" rows="2"></textarea>
         </div>
-        <div id="ended-wrap" style="display:none">
-          <label for="f-ended">Rétabli à <span class="req">*</span></label>
-          <input type="datetime-local" id="f-ended">
-        </div>
-      </div>
-      <div>
-        <label for="f-comment">Commentaire (optionnel)</label>
-        <textarea id="f-comment" rows="2"></textarea>
-      </div>
-      <button type="submit" class="cta-report" style="justify-self:start">Envoyer le signalement</button>
-      <div class="msg" id="form-msg" role="status"></div>
-    </form>
+        <button type="submit" class="cta-report" style="justify-self:start">Envoyer le signalement</button>
+        <div class="msg" id="form-msg" role="status"></div>
+      </form>
+    </div>
   </div>
 
 <script>
@@ -328,8 +350,52 @@ tabEls.forEach((tab, i) => {
   });
 });
 
-document.getElementById('cta-report').addEventListener('click', () => {
-  activateTab(document.getElementById('tab-form'));
+const reportModal = document.getElementById("report-modal");
+const modalCloseBtn = document.getElementById("modal-close");
+let lastFocusedBeforeModal = null;
+
+function getFocusableModalElements() {
+  return Array.from(reportModal.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter(el => !el.disabled && el.offsetParent !== null);
+}
+
+function handleModalKeydown(e) {
+  if (e.key === "Escape") {
+    closeReportModal();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const focusable = getFocusableModalElements();
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+function openReportModal() {
+  lastFocusedBeforeModal = document.activeElement || document.getElementById('cta-report');
+  reportModal.hidden = false;
+  modalCloseBtn.focus();
+  document.addEventListener("keydown", handleModalKeydown);
+}
+
+function closeReportModal() {
+  reportModal.hidden = true;
+  document.removeEventListener("keydown", handleModalKeydown);
+  if (lastFocusedBeforeModal) lastFocusedBeforeModal.focus();
+}
+
+document.getElementById('cta-report').addEventListener('click', openReportModal);
+modalCloseBtn.addEventListener('click', closeReportModal);
+reportModal.addEventListener('click', (e) => {
+  if (e.target === reportModal) closeReportModal(); // clicking the backdrop itself, not the card, closes it
 });
 
 function toggleEndedAt() {
@@ -385,11 +451,11 @@ async function refreshMap() {
       // Baseline marker so a quiet governorate reads as "no active reports",
       // not as "no coverage at all".
       L.circleMarker([g.lat, g.lng], {
-        radius: 4, color: "#5b6470", fillColor: "#5b6470", fillOpacity: 0.5, weight: 0,
+        radius: 4, color: "#5f5d54", fillColor: "#5f5d54", fillOpacity: 0.5, weight: 0,
       }).bindPopup(`<b>${esc(g.name)}</b><br>Aucun signalement actif`).addTo(markerLayer);
       return;
     }
-    const color = counts.electricity >= counts.water ? "#eab308" : "#38bdf8";
+    const color = counts.electricity >= counts.water ? "#eab308" : "#4fa3c4";
     const radius = 8 + Math.min(total, 20) * 2;
     L.circleMarker([g.lat, g.lng], {
       radius, color, fillColor: color, fillOpacity: 0.45, weight: 1,
@@ -580,6 +646,7 @@ async function submitReport(ev) {
     document.getElementById("f-comment").value = "";
     await loadReports();
     await refreshMap();
+    closeReportModal();
   } else {
     const err = await resp.json().catch(() => ({}));
     msg.textContent = "Erreur : " + (err.detail || resp.statusText);

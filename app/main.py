@@ -89,6 +89,28 @@ class ClustersResponse(BaseModel):
     needed: int = cluster_inference.MIN_NOTICES
 
 
+class ModelStatusResponse(BaseModel):
+    notices_so_far: int
+    notices_needed: int
+    localities_so_far: int
+    localities_needed: int
+    data_floor_met: bool
+    cluster_count: int
+    average_stability: float
+    last_run_date: Optional[str] = None
+    days_of_history: int
+
+
+class CooccurrenceEdge(BaseModel):
+    locality_a: str
+    locality_b: str
+    notice_count: int
+
+
+class CooccurrencesResponse(BaseModel):
+    edges: list[CooccurrenceEdge]
+
+
 # -------------------------------------------------------------- endpoints --
 
 @app.get("/api/governorates")
@@ -177,6 +199,47 @@ def get_clusters():
         for r in latest["rows"] if r["lat"] is not None and r["lng"] is not None
     ]
     return ClustersResponse(data=points, insufficient_data=False, notices_so_far=notices_so_far)
+
+
+@app.get("/api/model-status", response_model=ModelStatusResponse)
+def get_model_status():
+    notices_so_far = db.total_notice_count()
+    localities_so_far = db.distinct_locality_count()
+    latest = db.latest_cluster_run()
+
+    cluster_count = 0
+    average_stability = 0.0
+    last_run_date = None
+    if latest is not None:
+        rows = latest["rows"]
+        cluster_count = len({r["cluster_id"] for r in rows})
+        if rows:
+            average_stability = round(sum(r["stability"] for r in rows) / len(rows), 3)
+        last_run_date = latest["run_date"]
+
+    return ModelStatusResponse(
+        notices_so_far=notices_so_far,
+        notices_needed=cluster_inference.MIN_NOTICES,
+        localities_so_far=localities_so_far,
+        localities_needed=cluster_inference.MIN_LOCALITIES,
+        data_floor_met=(
+            notices_so_far >= cluster_inference.MIN_NOTICES
+            and localities_so_far >= cluster_inference.MIN_LOCALITIES
+        ),
+        cluster_count=cluster_count,
+        average_stability=average_stability,
+        last_run_date=last_run_date,
+        days_of_history=db.count_cluster_run_dates(),
+    )
+
+
+@app.get("/api/cooccurrences", response_model=CooccurrencesResponse)
+def get_cooccurrences():
+    edges = [
+        CooccurrenceEdge(locality_a=r["locality_a"], locality_b=r["locality_b"], notice_count=r["notice_count"])
+        for r in db.list_cooccurrences()
+    ]
+    return CooccurrencesResponse(edges=edges)
 
 
 # ------------------------------------------------------------ static site --
