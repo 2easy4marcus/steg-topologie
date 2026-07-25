@@ -176,6 +176,8 @@ def internal_scrape():
         count = import_official.run(verbose=False)
     except import_official.steg_scraper.FetchError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scrape job failed: {e}")
     return ScrapeResult(notices_processed=count, total_in_db=db.count_official_notices())
 
 

@@ -13,8 +13,9 @@ jobs:
     steps:
       - name: Hit /api/internal/scrape
         run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/internal/scrape" \
-            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
+          curl --fail-with-body --max-time 600 -X POST "${{ secrets.APP_URL }}/api/internal/scrape" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            -w "\nHTTP %{http_code} in %{time_total}s\n"
 
   recluster:
     if: github.event.schedule == '30 2 * * *'
@@ -22,5 +23,6 @@ jobs:
     steps:
       - name: Hit /api/internal/recluster
         run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/internal/recluster" \
-            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
+          curl --fail-with-body --max-time 600 -X POST "${{ secrets.APP_URL }}/api/internal/recluster" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            -w "\nHTTP %{http_code} in %{time_total}s\n"
