@@ -80,6 +80,54 @@ def test_crawl_archive_imports_new_notices_then_stops(monkeypatch):
     assert f"{backfill_official.ARCHIVE_URL}?page=3" not in fetch_calls  # zero unseen links on page 2 -> stop
 
 
+def test_crawl_archive_keeps_going_past_pages_already_fully_in_db(monkeypatch):
+    """Regression test for the actual production failure.
+
+    STEG's archive is newest-first and the daily scraper already owns the
+    newest notices, so the shallow pages are routinely 100% already-in-DB
+    while the unseen history sits deeper. The crawl must NOT read a fully
+    known page as "we've caught up" -- doing so is what made the real
+    backfill quit at page 1 with 0 imported, never reaching any history.
+    """
+    # Simulate a prior scrape having already imported page 0 and page 1's
+    # notices, exactly as the daily cron would have.
+    for known in ("notice-new-a", "notice-new-b"):
+        db.upsert_official_notice({
+            "id": known, "title": "t", "url": f"http://x/{known}",
+            "region": "جهة الشمال", "notice_date": "24/07/2026",
+            "notice_time": "18:00", "time_window_sentence": "s",
+            "zones": [], "subregions": [], "raw_text": "raw",
+            "scraped_at": "2026-07-26T00:00:00+00:00",
+        })
+
+    pages = {
+        0: ["/fr/news/notice-new-a"],   # already in DB
+        1: ["/fr/news/notice-new-b"],   # already in DB -- must NOT stop here
+        2: ["/fr/news/notice-old-c"],   # the unseen history we're after
+        3: [],                          # pagination exhausted
+    }
+    fetch_calls = []
+
+    def fake_fetch(url):
+        fetch_calls.append(url)
+        page = 0 if url == backfill_official.ARCHIVE_URL else int(url.split("page=")[1])
+        return _page_soup(pages[page])
+
+    monkeypatch.setattr(steg_scraper, "fetch", fake_fetch)
+    monkeypatch.setattr(
+        steg_scraper, "parse_notice_detail",
+        lambda url: _fake_detail(
+            "إشعار بانقطاع الكهرباء - جهة الجنوب - 11:00 20/07/2026", ["Gabes"]),
+    )
+
+    imported = backfill_official.crawl_archive(max_pages=10, verbose=False)
+
+    # The whole point: it pushed past two fully-known pages to reach page 2.
+    assert imported == 1
+    assert db.official_notice_exists("notice-old-c") is True
+    assert f"{backfill_official.ARCHIVE_URL}?page=2" in fetch_calls
+
+
 def test_crawl_archive_respects_max_pages_safety_cap(monkeypatch):
     call_count = {"n": 0}
 

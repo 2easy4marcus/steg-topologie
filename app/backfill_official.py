@@ -2,15 +2,18 @@
 One-time (or occasionally re-run) historical backfill for STEG outage notices.
 
 STEG's own site keeps a paginated archive of past news items at
-/fr/news, /fr/news?page=1, /fr/news?page=2, ... (confirmed live: page=1
-onward is full of historical outage notices, several per day). This module
-crawls that archive, going back further with each page, until a full page
-has zero unseen links (everything on it is already known to this crawl or
-already in the DB) -- making repeated runs cheap and safe. A page whose new
-links turn out to be non-outage notices (e.g. recruitment/tender news mixed
-into the archive) does NOT stop the crawl by itself -- only "nothing left
-unseen" does. Hard-capped at max_pages regardless, so a future site change
-can't cause a runaway crawl.
+/fr/news, /fr/news?page=1, /fr/news?page=2, ... ordered newest-first
+(confirmed live: ~10 pages, with pages 2+ holding progressively older
+outage notices). This module walks that archive from page 0 down to the end
+of pagination, importing every outage notice not already in the DB.
+
+Crucially, it walks the WHOLE archive each run rather than stopping at the
+first already-known page: the daily scraper already owns the newest notices,
+so the shallow pages are routinely fully known while the unseen history sits
+further down. Already-known notices just get their detail fetch skipped.
+The crawl stops only when a page offers no link it hasn't already walked
+past this run (pagination exhausted), and is hard-capped at max_pages so a
+future site change can't cause a runaway crawl.
 
 Run manually (NOT on a schedule) via:
     python3 -m app.backfill_official
@@ -70,14 +73,17 @@ def _crawl_archive_unlocked(
     on_progress=None,
 ) -> int:
     """Crawl the archive page by page, importing any outage notice not
-    already known, until a page contributes nothing new or max_pages is
-    reached. Returns the number of newly-imported notices.
+    already in the DB, until pagination is exhausted or max_pages is reached.
+    Returns the number of newly-imported notices.
 
-    If on_progress is given, it is called as on_progress(page, new_links_count,
-    imported_so_far) twice per page that has new links: once right after the
-    new links are found (before processing them), and once again after the
-    page's per-notice processing loop finishes. It is not called for a page
-    with no new links (the "nothing new, stopping" case)."""
+    An already-known or non-outage page does not end the crawl -- see the
+    module docstring for why that distinction matters.
+
+    If on_progress is given, it is called as on_progress(page,
+    fresh_links_count, imported_so_far) twice per page that has fresh links:
+    once right after they're found (before processing), and once after the
+    page's per-notice loop finishes. It is not called for the final
+    pagination-exhausted page."""
     db.init_db()
     now = datetime.now(timezone.utc).isoformat()
     imported = 0
@@ -86,27 +92,50 @@ def _crawl_archive_unlocked(
 
     for page in range(max_pages):
         links = _archive_page_links(page)
-        new_links = [
+
+        # Two DIFFERENT questions, which earlier versions of this function
+        # wrongly conflated:
+        #
+        #   1. "Have I already seen this link during THIS crawl?" (seen_ids)
+        #      -> the only sound signal that pagination is exhausted. If a
+        #         page offers nothing we haven't already walked past, we've
+        #         either run off the end of the archive or Drupal is handing
+        #         back the last page again. Stop.
+        #
+        #   2. "Is this notice already in the DB from a PREVIOUS run?"
+        #      (db.official_notice_exists) -> only a reason to skip the
+        #      expensive detail fetch for that one notice. NOT a reason to
+        #      stop crawling.
+        #
+        # Conflating them broke production twice: STEG's archive is ordered
+        # newest-first and the daily scraper already owns the newest notices,
+        # so pages 0-1 are typically fully known while pages 2-9 hold the
+        # unseen history this backfill exists to collect. Treating "this page
+        # is already in the DB" as "we've caught up" made the crawl quit at
+        # page 1 and never reach any real history.
+        fresh_links = [
             url for url in links
             if steg_scraper.slugify_id(url) not in seen_ids
-            and not db.official_notice_exists(steg_scraper.slugify_id(url))
         ]
 
-        if not new_links:
+        if not fresh_links:
             if verbose:
-                print(f"  page {page}: nothing new, stopping.")
+                print(f"  page {page}: no links we haven't already walked -- "
+                      f"end of archive, stopping.")
             break
 
         if verbose:
-            print(f"  page {page}: {len(new_links)} new link(s), fetching details...")
+            print(f"  page {page}: {len(fresh_links)} link(s) to check...")
 
         if on_progress is not None:
-            on_progress(page, len(new_links), imported)
+            on_progress(page, len(fresh_links), imported)
 
         imported_before = imported
-        for url in new_links:
+        for url in fresh_links:
             notice_id = steg_scraper.slugify_id(url)
             seen_ids.add(notice_id)
+            if db.official_notice_exists(notice_id):
+                continue  # already have it -- skip the fetch, keep crawling
             detail = steg_scraper.parse_notice_detail(url)
             title = detail.get("title") or ""
             if steg_scraper.NOTICE_TITLE_MARKER not in title:
@@ -133,22 +162,15 @@ def _crawl_archive_unlocked(
                 print(f"  imported: {title}")
 
         if on_progress is not None:
-            on_progress(page, len(new_links), imported)
+            on_progress(page, len(fresh_links), imported)
 
-        # NOTE: we deliberately do NOT stop just because this page's new
-        # links turned out to be entirely non-outage notices (e.g. a
-        # recruitment/tender item mixed into the archive). A single stray
-        # non-outage link among mostly-already-known content does not mean
-        # deeper, never-crawled pages are empty too -- an earlier version of
-        # this function stopped on exactly that condition and, in
-        # production, halted the entire backfill at page 0 (which is mostly
-        # re-covering already-scraped ground) without ever reaching page 1+,
-        # where the real historical notices live. The only sound "we've
-        # caught up" signal is a page with zero *unseen* links at all (the
-        # `if not new_links: break` check above) -- max_pages remains the
-        # hard backstop against a genuinely pathological run of pure noise.
+        # A page that yielded no imports is NOT a stop signal -- it just means
+        # everything on it was either already in the DB or wasn't an outage
+        # notice. Deeper pages can still hold unseen history. Only the
+        # pagination-exhausted check above stops the crawl; max_pages is the
+        # hard backstop.
         if imported_before == imported and verbose:
-            print(f"  page {page}: no outage notices among new links, continuing.")
+            print(f"  page {page}: nothing to import here, continuing deeper.")
 
         time.sleep(PAGE_DELAY_SECONDS)
 
