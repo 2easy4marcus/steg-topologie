@@ -1,5 +1,5 @@
 # tests/test_cluster_inference.py
-from app import db, cluster_inference
+from app import db, cluster_inference, model_readiness
 
 
 def test_ppmi_graph_weights_known_fixture():
@@ -77,3 +77,73 @@ def test_stability_zero_for_locality_new_to_todays_run():
     assert stability["A"] == 1.0
     assert stability["B"] == 1.0
     assert stability["C"] == 0.0  # "C" never appeared in any prior run
+
+
+def _readiness(quality_ready=True, operational_ready=True):
+    return model_readiness.ReadinessReport(
+        build_id="build-1",
+        model_quality=model_readiness.ReadinessSection(
+            ready=quality_ready, signals=[]
+        ),
+        operational_health=model_readiness.ReadinessSection(
+            ready=operational_ready, signals=[]
+        ),
+    )
+
+
+def test_recluster_refuses_run_when_model_quality_fails(monkeypatch):
+    db.create_model_build("build-1", "2026-07-26T10:00:00Z")
+    db.complete_model_build("build-1", "2026-07-26T10:01:00Z", 30, 10, 20)
+    db.activate_completed_model_build("build-1")
+    monkeypatch.setattr(
+        cluster_inference.model_readiness,
+        "evaluate",
+        lambda build_id=None: _readiness(quality_ready=False),
+    )
+
+    result = cluster_inference.run_recluster()
+
+    assert result["status"] == "insufficient_data"
+    assert db.active_cluster_run_id() is None
+
+
+def test_recluster_persists_source_build_and_algorithm(monkeypatch):
+    db.create_model_build("build-1", "2026-07-26T10:00:00Z")
+    with db.get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO build_locality_counts(build_id, locality, notice_count)
+            VALUES ('build-1', 'A', 30), ('build-1', 'B', 30)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO build_cooccurrences(
+                build_id, locality_a, locality_b, notice_count,
+                distinct_date_count
+            ) VALUES ('build-1', 'A', 'B', 10, 10)
+            """
+        )
+    db.complete_model_build("build-1", "2026-07-26T10:01:00Z", 30, 2, 1)
+    db.activate_completed_model_build("build-1")
+    db.upsert_locality("A", lat=1.0, lng=1.0)
+    db.upsert_locality("B", lat=2.0, lng=2.0)
+    monkeypatch.setattr(
+        cluster_inference.model_readiness,
+        "evaluate",
+        lambda build_id=None: _readiness(),
+    )
+    monkeypatch.setattr(
+        cluster_inference.geocoding, "geocode_all_pending", lambda: None
+    )
+
+    result = cluster_inference.run_recluster()
+    active = db.active_cluster_run()
+
+    assert result["status"] == "ok"
+    assert active["build_id"] == "build-1"
+    assert active["algorithm_version"] == "ppmi-louvain-v1"
+
+    repeated = cluster_inference.run_recluster()
+    assert repeated["status"] == "already_done"
+    assert repeated["cluster_run_id"] == active["run_id"]

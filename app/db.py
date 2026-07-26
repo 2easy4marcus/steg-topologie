@@ -624,6 +624,65 @@ def complete_cluster_run(
         )
 
 
+def write_cluster_members(
+    run_id: str, cluster_assignment: dict, stability: dict
+) -> None:
+    with get_conn() as conn:
+        for locality, cluster_id in cluster_assignment.items():
+            conn.execute(
+                """
+                INSERT INTO cluster_members(
+                    run_id, locality, cluster_id, stability
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(run_id, locality) DO UPDATE SET
+                    cluster_id = excluded.cluster_id,
+                    stability = excluded.stability
+                """,
+                [
+                    run_id,
+                    locality,
+                    cluster_id,
+                    stability.get(locality, 0.0),
+                ],
+            )
+
+
+def active_cluster_run():
+    run_id = active_cluster_run_id()
+    if not run_id:
+        return None
+    with get_conn() as conn:
+        run = conn.execute(
+            "SELECT * FROM cluster_runs WHERE run_id = ?", [run_id]
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT cm.locality, cm.cluster_id, cm.stability, l.lat, l.lng
+            FROM cluster_members cm
+            LEFT JOIN localities l ON l.name = cm.locality
+            WHERE cm.run_id = ?
+            """,
+            [run_id],
+        ).fetchall()
+        return {**run, "rows": rows}
+
+
+def completed_cluster_run_for(
+    run_date: str, build_id: str, algorithm_version: str
+):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM cluster_runs
+            WHERE build_id = ? AND algorithm_version = ?
+              AND status = 'completed'
+              AND substr(started_at, 1, 10) = ?
+            ORDER BY completed_at DESC LIMIT 1
+            """,
+            [build_id, algorithm_version, run_date],
+        ).fetchone()
+
+
 def activate_completed_cluster_run(run_id: str) -> None:
     with get_transaction() as tx:
         row = tx.execute(

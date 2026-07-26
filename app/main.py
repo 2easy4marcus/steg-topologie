@@ -128,6 +128,10 @@ class RecheckResult(BaseModel):
     needed: Optional[int] = None
     localities_clustered: Optional[int] = None
     cluster_count: Optional[int] = None
+    cluster_run_id: Optional[str] = None
+    build_id: Optional[str] = None
+    algorithm_version: Optional[str] = None
+    readiness: Optional[dict] = None
 
 
 class ClusterPoint(BaseModel):
@@ -140,9 +144,15 @@ class ClusterPoint(BaseModel):
 
 class ClustersResponse(BaseModel):
     data: list[ClusterPoint]
+    clusters: list[ClusterPoint] = []
     insufficient_data: bool
     notices_so_far: int
     needed: int = cluster_inference.MIN_NOTICES
+    cluster_run_id: str | None = None
+    build_id: str | None = None
+    active_build_id: str | None = None
+    algorithm_version: str | None = None
+    is_current: bool = False
 
 
 class ModelStatusResponse(BaseModel):
@@ -293,6 +303,31 @@ def internal_recluster():
 @app.get("/api/clusters", response_model=ClustersResponse)
 def get_clusters():
     notices_so_far = db.total_notice_count()
+    versioned = db.active_cluster_run()
+    if versioned is not None:
+        points = [
+            ClusterPoint(
+                locality=row["locality"],
+                cluster_id=row["cluster_id"],
+                stability=row["stability"],
+                lat=row["lat"],
+                lng=row["lng"],
+            )
+            for row in versioned["rows"]
+            if row["lat"] is not None and row["lng"] is not None
+        ]
+        active_build = db.active_build_id()
+        return ClustersResponse(
+            data=points,
+            clusters=points,
+            insufficient_data=False,
+            notices_so_far=notices_so_far,
+            cluster_run_id=versioned["run_id"],
+            build_id=versioned["build_id"],
+            active_build_id=active_build,
+            algorithm_version=versioned["algorithm_version"],
+            is_current=versioned["build_id"] == active_build,
+        )
     latest = db.latest_cluster_run()
     if latest is None:
         return ClustersResponse(data=[], insufficient_data=True, notices_so_far=notices_so_far)

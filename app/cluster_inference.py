@@ -10,17 +10,20 @@ identities or locations. See docs/superpowers/specs/2026-07-24-grid-cooccurrence
 
 import math
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
+from uuid import uuid4
 
 import networkx as nx
 import community as community_louvain
 
 from . import db
 from . import geocoding
+from . import model_readiness
 
 MIN_NOTICES = 30
 MIN_LOCALITIES = 10
 STABILITY_LOOKBACK_DAYS = 7
+ALGORITHM_VERSION = "ppmi-louvain-v1"
 
 
 def build_ppmi_graph(cooccurrences: list, total_notices: int) -> nx.Graph:
@@ -95,34 +98,73 @@ def run_recluster() -> dict:
     the PPMI graph, cluster, score stability, persist. Returns a summary
     dict mirroring the /api/internal/recluster response."""
     run_date = date.today().isoformat()
-
-    if db.has_cluster_run(run_date):
-        return {"status": "already_done", "run_date": run_date}
-
-    notices_so_far = db.total_notice_count()
-    localities_so_far = db.distinct_locality_count()
-    if notices_so_far < MIN_NOTICES or localities_so_far < MIN_LOCALITIES:
+    build_id = db.active_build_id()
+    if not build_id:
         return {
             "status": "insufficient_data",
             "run_date": run_date,
-            "notices_so_far": notices_so_far,
-            "needed": MIN_NOTICES,
+            "readiness": model_readiness.evaluate().model_dump(),
+        }
+    existing = db.completed_cluster_run_for(
+        run_date, build_id, ALGORITHM_VERSION
+    )
+    if existing:
+        return {
+            "status": "already_done",
+            "run_date": run_date,
+            "cluster_run_id": existing["run_id"],
+            "build_id": build_id,
+            "algorithm_version": ALGORITHM_VERSION,
+        }
+
+    readiness = model_readiness.evaluate(build_id=build_id)
+    if not readiness.model_quality.ready:
+        return {
+            "status": "insufficient_data",
+            "run_date": run_date,
+            "readiness": readiness.model_dump(),
+        }
+    if not readiness.operational_health.ready:
+        return {
+            "status": "operationally_stale",
+            "run_date": run_date,
+            "readiness": readiness.model_dump(),
         }
 
     geocoding.geocode_all_pending()
 
-    cooccurrences = db.list_cooccurrences()
+    notices_so_far = db.total_notice_count()
+    cooccurrences = db.build_cooccurrences(build_id)
     G = build_ppmi_graph(cooccurrences, total_notices=notices_so_far)
-    for name in db.list_locality_names():
+    for name in db.build_locality_counts(build_id):
         G.add_node(name)
 
     partition = compute_clusters(G)
     stability = compute_stability(run_date, partition)
+    run_id = uuid4().hex
+    db.create_cluster_run(
+        run_id,
+        build_id,
+        ALGORITHM_VERSION,
+        datetime.now(timezone.utc).isoformat(),
+    )
+    db.write_cluster_members(run_id, partition, stability)
+    db.complete_cluster_run(
+        run_id,
+        datetime.now(timezone.utc).isoformat(),
+        len(set(partition.values())),
+        len(partition),
+    )
+    db.activate_completed_cluster_run(run_id)
+    # Preserve legacy stability history while cluster consumers migrate.
     db.write_cluster_run(run_date, partition, stability)
 
     return {
         "status": "ok",
         "run_date": run_date,
+        "cluster_run_id": run_id,
+        "build_id": build_id,
+        "algorithm_version": ALGORITHM_VERSION,
         "localities_clustered": len(partition),
         "cluster_count": len(set(partition.values())),
     }
