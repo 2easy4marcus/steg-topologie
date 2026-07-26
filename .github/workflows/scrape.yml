@@ -1,28 +1,73 @@
-name: Scrape and recluster
+name: Scrape, validate, and recluster
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # once daily at 02:00 UTC -- scrape
-    - cron: "30 2 * * *"  # once daily at 02:30 UTC -- recluster
-  workflow_dispatch: {}    # allow manual runs from the Actions tab
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
 
 jobs:
-  scrape:
-    if: github.event.schedule == '0 2 * * *' || github.event_name == 'workflow_dispatch'
+  evidence-pipeline:
     runs-on: ubuntu-latest
     steps:
-      - name: Hit /api/internal/scrape
+      - name: Scrape and activate evidence build
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl --fail-with-body --max-time 600 -X POST "${{ secrets.APP_URL }}/api/internal/scrape" \
-            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code} in %{time_total}s\n"
+          set -euo pipefail
+          request_id="$(cat /proc/sys/kernel/random/uuid)"
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          metrics="$(curl --silent --show-error --max-time 600 \
+            --dump-header "$headers" --output "$body" \
+            --write-out "%{http_code} %{time_total}" \
+            -X POST "$APP_URL/api/internal/scrape" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "X-Request-ID: $request_id")"
+          read -r status duration <<< "$metrics"
+          response_id="$(awk 'BEGIN{IGNORECASE=1} /^X-Request-ID:/ {gsub("\r","",$2); print $2}' "$headers")"
+          echo "Scrape HTTP $status in ${duration}s request_id=${response_id:-$request_id}"
+          cat "$body"
+          test "$status" -ge 200 -a "$status" -lt 300
 
-  recluster:
-    if: github.event.schedule == '30 2 * * *'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Hit /api/internal/recluster
+      - name: Check readiness
+        id: readiness
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
         run: |
-          curl --fail-with-body --max-time 600 -X POST "${{ secrets.APP_URL }}/api/internal/recluster" \
-            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code} in %{time_total}s\n"
+          set -euo pipefail
+          body="$(mktemp)"
+          headers="$(mktemp)"
+          metrics="$(curl --silent --show-error --max-time 60 \
+            --dump-header "$headers" --output "$body" \
+            --write-out "%{http_code} %{time_total}" \
+            "$APP_URL/api/model-readiness")"
+          read -r status duration <<< "$metrics"
+          response_id="$(awk 'BEGIN{IGNORECASE=1} /^X-Request-ID:/ {gsub("\r","",$2); print $2}' "$headers")"
+          echo "Readiness HTTP $status in ${duration}s request_id=${response_id:-unknown}"
+          cat "$body"
+          test "$status" -eq 200
+          ready="$(jq -r '.model_quality.ready and .operational_health.ready' "$body")"
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Recluster current evidence build
+        if: steps.readiness.outputs.ready == 'true'
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          request_id="$(cat /proc/sys/kernel/random/uuid)"
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          metrics="$(curl --silent --show-error --max-time 600 \
+            --dump-header "$headers" --output "$body" \
+            --write-out "%{http_code} %{time_total}" \
+            -X POST "$APP_URL/api/internal/recluster" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "X-Request-ID: $request_id")"
+          read -r status duration <<< "$metrics"
+          response_id="$(awk 'BEGIN{IGNORECASE=1} /^X-Request-ID:/ {gsub("\r","",$2); print $2}' "$headers")"
+          echo "Recluster HTTP $status in ${duration}s request_id=${response_id:-$request_id}"
+          cat "$body"
+          test "$status" -ge 200 -a "$status" -lt 300

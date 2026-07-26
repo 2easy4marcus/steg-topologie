@@ -111,3 +111,18 @@ disk I/O error` (or similar) running the app directly against `tracker.db`
 on a network-mounted/FUSE filesystem, that's an environment limitation of
 that specific mount, not an app bug — it doesn't affect a normal local
 disk or a real deployment.
+# Evidence and model APIs
+
+The model is built from versioned, traceable STEG evidence. Public
+read-only endpoints:
+
+- `GET /api/status` — active evidence/cluster identifiers and safe health.
+- `GET /api/status/ingestion` — persisted scrape/backfill progress.
+- `GET /api/model-status` — backward-compatible model summary.
+- `GET /api/model-readiness` — model-quality and operational-health signals.
+- `GET /api/clusters` — cluster members plus source evidence build metadata.
+- `GET /api/edge-evidence?locality_a=...&locality_b=...` — supporting STEG
+  notices for an active statistical edge.
+
+Clusters and edges are experimental statistical relationships. They do not
+represent confirmed transformers, feeders, or physical grid locations.
