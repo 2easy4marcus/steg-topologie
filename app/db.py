@@ -95,6 +95,142 @@ SCHEMA_STATEMENTS = [
         notice_count INTEGER NOT NULL DEFAULT 0
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS notice_fetch_attempts (
+        id TEXT PRIMARY KEY,
+        notice_id TEXT,
+        source_url TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        http_status INTEGER,
+        content_hash TEXT,
+        public_error_code TEXT,
+        internal_error_detail TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS notice_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        notice_id TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        raw_html TEXT NOT NULL,
+        first_fetched_at TEXT NOT NULL,
+        UNIQUE(notice_id, content_hash)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS notice_parses (
+        parse_id TEXT PRIMARY KEY,
+        snapshot_id TEXT NOT NULL,
+        notice_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        notice_date_raw TEXT,
+        notice_date_iso TEXT,
+        parser_version TEXT NOT NULL,
+        normalization_version TEXT NOT NULL,
+        parse_status TEXT NOT NULL,
+        parse_warnings TEXT NOT NULL DEFAULT '[]',
+        parsed_at TEXT NOT NULL,
+        UNIQUE(snapshot_id, parser_version, normalization_version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS notice_localities (
+        parse_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        raw_name TEXT NOT NULL,
+        canonical_name TEXT NOT NULL,
+        subregion_name TEXT,
+        PRIMARY KEY(parse_id, ordinal)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS notice_state (
+        notice_id TEXT PRIMARY KEY,
+        latest_snapshot_id TEXT,
+        active_parse_id TEXT,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_builds (
+        build_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        notice_count INTEGER NOT NULL DEFAULT 0,
+        locality_count INTEGER NOT NULL DEFAULT 0,
+        pair_count INTEGER NOT NULL DEFAULT 0,
+        public_error_code TEXT,
+        internal_error_detail TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS build_locality_counts (
+        build_id TEXT NOT NULL,
+        locality TEXT NOT NULL,
+        notice_count INTEGER NOT NULL,
+        PRIMARY KEY(build_id, locality)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS build_cooccurrences (
+        build_id TEXT NOT NULL,
+        locality_a TEXT NOT NULL,
+        locality_b TEXT NOT NULL,
+        notice_count INTEGER NOT NULL,
+        distinct_date_count INTEGER NOT NULL,
+        first_observed_on TEXT,
+        last_observed_on TEXT,
+        PRIMARY KEY(build_id, locality_a, locality_b)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_state (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        active_build_id TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cluster_runs (
+        run_id TEXT PRIMARY KEY,
+        build_id TEXT NOT NULL,
+        algorithm_version TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        cluster_count INTEGER NOT NULL DEFAULT 0,
+        locality_count INTEGER NOT NULL DEFAULT 0,
+        public_error_code TEXT,
+        internal_error_detail TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cluster_members (
+        run_id TEXT NOT NULL,
+        locality TEXT NOT NULL,
+        cluster_id INTEGER NOT NULL,
+        stability REAL NOT NULL,
+        PRIMARY KEY(run_id, locality)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cluster_state (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        active_cluster_run_id TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_notice ON notice_fetch_attempts(notice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_time ON notice_fetch_attempts(fetched_at)",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_notice ON notice_snapshots(notice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_parses_notice ON notice_parses(notice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_parses_snapshot ON notice_parses(snapshot_id)",
+    "CREATE INDEX IF NOT EXISTS idx_parses_date ON notice_parses(notice_date_iso)",
+    "CREATE INDEX IF NOT EXISTS idx_notice_localities_name ON notice_localities(canonical_name)",
+    "CREATE INDEX IF NOT EXISTS idx_build_localities_build ON build_locality_counts(build_id)",
+    "CREATE INDEX IF NOT EXISTS idx_build_pairs_build ON build_cooccurrences(build_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cluster_members_run ON cluster_members(run_id)",
 ]
 
 
@@ -138,6 +274,20 @@ def init_db():
     with get_conn() as conn:
         for stmt in SCHEMA_STATEMENTS:
             conn.execute(stmt)
+
+
+def get_model_build_public(build_id: str):
+    """Return the public-safe model-build fields only."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT build_id, status, created_at, completed_at, notice_count,
+                   locality_count, pair_count, public_error_code
+            FROM model_builds
+            WHERE build_id = ?
+            """,
+            [build_id],
+        ).fetchone()
 
 
 # ---------- official notices ----------
