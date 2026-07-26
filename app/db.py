@@ -946,6 +946,70 @@ def operational_health_metrics(cutoff: str):
     }
 
 
+def edge_evidence(
+    build_id: str, locality_a: str, locality_b: str
+):
+    a, b = sorted([locality_a, locality_b])
+    with get_conn() as conn:
+        edge = conn.execute(
+            """
+            SELECT * FROM build_cooccurrences
+            WHERE build_id = ? AND locality_a = ? AND locality_b = ?
+            """,
+            [build_id, a, b],
+        ).fetchone()
+        if edge is None:
+            return None
+        rows = conn.execute(
+            """
+            SELECT DISTINCT np.notice_id, np.title, np.notice_date_iso,
+                   nsnap.source_url, nla.subregion_name
+            FROM notice_state state
+            JOIN notice_parses np ON np.parse_id = state.active_parse_id
+            JOIN notice_snapshots nsnap
+              ON nsnap.snapshot_id = np.snapshot_id
+            JOIN notice_localities nla ON nla.parse_id = np.parse_id
+            WHERE EXISTS (
+                SELECT 1 FROM notice_localities x
+                WHERE x.parse_id = np.parse_id AND x.canonical_name = ?
+            )
+              AND EXISTS (
+                SELECT 1 FROM notice_localities y
+                WHERE y.parse_id = np.parse_id AND y.canonical_name = ?
+            )
+            ORDER BY np.notice_date_iso DESC, np.notice_id DESC
+            """,
+            [a, b],
+        ).fetchall()
+
+    notices = {}
+    order = []
+    for row in rows:
+        notice_id = row["notice_id"]
+        if notice_id not in notices:
+            order.append(notice_id)
+            notices[notice_id] = {
+                "notice_id": notice_id,
+                "title": row["title"],
+                "notice_date": row["notice_date_iso"],
+                "source_url": row["source_url"],
+                "subregions": [],
+            }
+        subregion = row["subregion_name"]
+        if subregion and subregion not in notices[notice_id]["subregions"]:
+            notices[notice_id]["subregions"].append(subregion)
+    return {
+        "locality_a": a,
+        "locality_b": b,
+        "distinct_notice_count": edge["notice_count"],
+        "distinct_outage_dates": edge["distinct_date_count"],
+        "first_observed_on": edge["first_observed_on"],
+        "last_observed_on": edge["last_observed_on"],
+        "active_build_id": build_id,
+        "notices": [notices[notice_id] for notice_id in order],
+    }
+
+
 # ---------- job locks ----------
 
 def acquire_lock(

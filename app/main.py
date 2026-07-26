@@ -260,6 +260,21 @@ def get_model_readiness():
     return model_readiness.evaluate()
 
 
+@app.get("/api/edge-evidence")
+def get_edge_evidence(locality_a: str, locality_b: str):
+    if locality_a == locality_b:
+        raise HTTPException(
+            status_code=422, detail="locality names must be different"
+        )
+    build_id = db.active_build_id()
+    if not build_id:
+        raise HTTPException(status_code=404, detail="edge not found")
+    evidence = db.edge_evidence(build_id, locality_a, locality_b)
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="edge not found")
+    return evidence
+
+
 @app.post("/api/internal/scrape", response_model=ScrapeResult, dependencies=[Depends(verify_cron_secret)])
 def internal_scrape():
     try:
