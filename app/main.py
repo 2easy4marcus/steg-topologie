@@ -30,6 +30,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -57,21 +58,22 @@ async def request_metadata(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     route = request.scope.get("route")
     route_template = getattr(route, "path", request.url.path)
-    print(
-        json.dumps(
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "request_id": request_id,
-                "method": request.method,
-                "route": route_template,
-                "status": response.status_code,
-                "duration_ms": round(
-                    (time.perf_counter() - started) * 1000, 3
-                ),
-            },
-            ensure_ascii=False,
-        )
-    )
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "method": request.method,
+        "route": route_template,
+        "status": response.status_code,
+        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+    }
+    for header, key in (
+        ("X-Job-ID", "job_id"),
+        ("X-Build-ID", "build_id"),
+        ("X-Cluster-Run-ID", "cluster_run_id"),
+    ):
+        if response.headers.get(header):
+            record[key] = response.headers[header]
+    print(json.dumps(record, ensure_ascii=False))
     return response
 
 
@@ -312,9 +314,14 @@ def internal_backfill_status():
 
 
 @app.post("/api/internal/recluster", response_model=RecheckResult, dependencies=[Depends(verify_cron_secret)])
-def internal_recluster():
+def internal_recluster(response: Response):
     try:
-        return RecheckResult(**cluster_inference.run_recluster())
+        result = cluster_inference.run_recluster()
+        if result.get("build_id"):
+            response.headers["X-Build-ID"] = result["build_id"]
+        if result.get("cluster_run_id"):
+            response.headers["X-Cluster-Run-ID"] = result["cluster_run_id"]
+        return RecheckResult(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Recluster job failed: {e}")
 
