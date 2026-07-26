@@ -774,6 +774,119 @@ def build_cooccurrences(build_id: str) -> list:
         ).fetchall()
 
 
+def model_readiness_metrics(build_id: str | None):
+    if not build_id:
+        return {
+            "valid_notices": 0,
+            "distinct_outage_dates": 0,
+            "unique_localities": 0,
+            "repeated_pairs": 0,
+            "active_ok_ratio": 0.0,
+            "largest_notice_pair_share": 0.0,
+        }
+    with get_conn() as conn:
+        notice_metrics = conn.execute(
+            """
+            WITH valid AS (
+                SELECT ns.notice_id, ns.active_parse_id, np.parse_status,
+                       np.notice_date_iso,
+                       COUNT(DISTINCT nl.canonical_name) AS locality_count
+                FROM notice_state ns
+                JOIN notice_parses np ON np.parse_id = ns.active_parse_id
+                JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
+                GROUP BY ns.notice_id, ns.active_parse_id,
+                         np.parse_status, np.notice_date_iso
+                HAVING COUNT(DISTINCT nl.canonical_name) >= 2
+            )
+            SELECT COUNT(*) AS valid_notices,
+                   COUNT(DISTINCT notice_date_iso) AS distinct_dates,
+                   COALESCE(AVG(CASE WHEN parse_status = 'ok'
+                                     THEN 1.0 ELSE 0.0 END), 0) AS ok_ratio
+            FROM valid
+            """
+        ).fetchone()
+        build_metrics = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM build_locality_counts
+                 WHERE build_id = ?) AS unique_localities,
+                (SELECT COUNT(*) FROM build_cooccurrences
+                 WHERE build_id = ? AND notice_count >= 2) AS repeated_pairs
+            """,
+            [build_id, build_id],
+        ).fetchone()
+        share = conn.execute(
+            """
+            WITH valid_names AS (
+                SELECT DISTINCT ns.notice_id, nl.canonical_name
+                FROM notice_state ns
+                JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
+                WHERE (
+                    SELECT COUNT(DISTINCT nl2.canonical_name)
+                    FROM notice_localities nl2
+                    WHERE nl2.parse_id = ns.active_parse_id
+                ) >= 2
+            ),
+            pair_counts AS (
+                SELECT a.notice_id, COUNT(*) AS pair_count
+                FROM valid_names a
+                JOIN valid_names b
+                  ON b.notice_id = a.notice_id
+                 AND a.canonical_name < b.canonical_name
+                GROUP BY a.notice_id
+            )
+            SELECT CASE WHEN COALESCE(SUM(pair_count), 0) = 0 THEN 0.0
+                        ELSE CAST(MAX(pair_count) AS REAL) / SUM(pair_count)
+                   END AS largest_share
+            FROM pair_counts
+            """
+        ).fetchone()
+    return {
+        "valid_notices": notice_metrics["valid_notices"],
+        "distinct_outage_dates": notice_metrics["distinct_dates"],
+        "unique_localities": build_metrics["unique_localities"],
+        "repeated_pairs": build_metrics["repeated_pairs"],
+        "active_ok_ratio": notice_metrics["ok_ratio"],
+        "largest_notice_pair_share": share["largest_share"] or 0.0,
+    }
+
+
+def operational_health_metrics(cutoff: str):
+    with get_conn() as conn:
+        parses = conn.execute(
+            """
+            WITH ranked AS (
+                SELECT np.parse_status,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY np.snapshot_id
+                           ORDER BY np.parsed_at DESC, np.parse_id DESC
+                       ) AS rn
+                FROM notice_state ns
+                JOIN notice_parses np
+                  ON np.snapshot_id = ns.latest_snapshot_id
+                WHERE np.parsed_at >= ?
+            )
+            SELECT COALESCE(
+                AVG(CASE WHEN parse_status = 'ok' THEN 1.0 ELSE 0.0 END),
+                0
+            ) AS success_ratio
+            FROM ranked WHERE rn = 1
+            """,
+            [cutoff],
+        ).fetchone()
+        scrape = conn.execute(
+            """
+            SELECT finished_at FROM ingestion_runs
+            WHERE job_type = 'scrape' AND status = 'completed'
+            ORDER BY finished_at DESC LIMIT 1
+            """
+        ).fetchone()
+    return {
+        "recent_parse_success_ratio": parses["success_ratio"],
+        "last_successful_scrape_at": scrape["finished_at"] if scrape else None,
+    }
+
+
 # ---------- job locks ----------
 
 def acquire_lock(

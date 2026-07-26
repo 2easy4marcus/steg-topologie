@@ -38,6 +38,7 @@ from . import backfill_official
 from . import cluster_inference
 from . import db
 from . import import_official
+from . import model_readiness
 from . import observability
 from .governorates import GOVERNORATE_NAMES, GOVERNORATES
 
@@ -154,6 +155,8 @@ class ModelStatusResponse(BaseModel):
     average_stability: float
     last_run_date: Optional[str] = None
     days_of_history: int
+    model_quality: dict | None = None
+    operational_health: dict | None = None
 
 
 class CooccurrenceEdge(BaseModel):
@@ -242,6 +245,11 @@ def get_public_ingestion_status():
     }
 
 
+@app.get("/api/model-readiness")
+def get_model_readiness():
+    return model_readiness.evaluate()
+
+
 @app.post("/api/internal/scrape", response_model=ScrapeResult, dependencies=[Depends(verify_cron_secret)])
 def internal_scrape():
     try:
@@ -312,6 +320,7 @@ def get_model_status():
             average_stability = round(sum(r["stability"] for r in rows) / len(rows), 3)
         last_run_date = latest["run_date"]
 
+    readiness = model_readiness.evaluate()
     return ModelStatusResponse(
         notices_so_far=notices_so_far,
         notices_needed=cluster_inference.MIN_NOTICES,
@@ -325,6 +334,8 @@ def get_model_status():
         average_stability=average_stability,
         last_run_date=last_run_date,
         days_of_history=db.count_cluster_run_dates(),
+        model_quality=readiness.model_quality.model_dump(),
+        operational_health=readiness.operational_health.model_dump(),
     )
 
 
