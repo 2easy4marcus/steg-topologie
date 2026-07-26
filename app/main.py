@@ -14,6 +14,7 @@ Then open http://127.0.0.1:8010 in a browser.
 """
 
 import hmac
+import base64
 import json
 import os
 import re
@@ -100,11 +101,43 @@ class ReportIn(BaseModel):
 
 
 CRON_SECRET = os.environ.get("CRON_SECRET")
+OPS_SECRET = os.environ.get("OPS_SECRET")
 
 
 def verify_cron_secret(x_cron_secret: str = Header(None)):
     if not CRON_SECRET or not hmac.compare_digest(x_cron_secret or "", CRON_SECRET):
         raise HTTPException(status_code=401, detail="Invalid or missing X-Cron-Secret")
+
+
+def verify_ops_secret(x_ops_secret: str = Header(None)):
+    if not OPS_SECRET:
+        raise HTTPException(
+            status_code=503, detail="Operations diagnostics unavailable"
+        )
+    if not hmac.compare_digest(x_ops_secret or "", OPS_SECRET):
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing X-Ops-Secret"
+        )
+
+
+def _decode_cursor(cursor: str | None):
+    if not cursor:
+        return None
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        return json.loads(
+            base64.urlsafe_b64decode(cursor + padding).decode("utf-8")
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Invalid cursor") from exc
+
+
+def _encode_cursor(value: dict | None):
+    if value is None:
+        return None
+    return base64.urlsafe_b64encode(
+        json.dumps(value, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
 
 
 class ScrapeResult(BaseModel):
@@ -279,6 +312,66 @@ def get_edge_evidence(locality_a: str, locality_b: str):
     if evidence is None:
         raise HTTPException(status_code=404, detail="edge not found")
     return evidence
+
+
+@app.get(
+    "/api/internal/ops/jobs",
+    dependencies=[Depends(verify_ops_secret)],
+)
+def get_ops_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = None,
+):
+    rows = db.list_ingestion_runs(limit + 1, _decode_cursor(cursor))
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    last = items[-1] if has_more and items else None
+    return {
+        "items": items,
+        "next_cursor": _encode_cursor(
+            {"started_at": last["started_at"], "id": last["id"]}
+            if last
+            else None
+        ),
+    }
+
+
+@app.get(
+    "/api/internal/ops/jobs/{job_id}",
+    dependencies=[Depends(verify_ops_secret)],
+)
+def get_ops_job(job_id: str):
+    job = db.get_ingestion_run_public(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get(
+    "/api/internal/ops/jobs/{job_id}/events",
+    dependencies=[Depends(verify_ops_secret)],
+)
+def get_ops_job_events(
+    job_id: str,
+    limit: int = Query(200, ge=1, le=500),
+    cursor: str | None = None,
+):
+    if db.get_ingestion_run_public(job_id) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    rows = db.list_job_events_page(
+        job_id, limit + 1, _decode_cursor(cursor)
+    )
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    last = items[-1] if has_more and items else None
+    return {
+        "items": items,
+        "next_cursor": _encode_cursor(
+            {"occurred_at": last["occurred_at"], "id": last["id"]}
+            if last
+            else None
+        ),
+    }
 
 
 @app.post("/api/internal/scrape", response_model=ScrapeResult, dependencies=[Depends(verify_cron_secret)])

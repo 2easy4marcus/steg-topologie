@@ -1362,6 +1362,74 @@ def list_job_events(job_id: str, limit: int = 200):
         ).fetchall()
 
 
+def list_ingestion_runs(limit: int = 20, before=None):
+    where = ""
+    params = []
+    if before:
+        where = (
+            "WHERE started_at < ? OR (started_at = ? AND id < ?)"
+        )
+        params.extend(
+            [before["started_at"], before["started_at"], before["id"]]
+        )
+    params.append(limit)
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT id, job_type, status, started_at, finished_at,
+                   current_page, pages_scanned, links_discovered,
+                   notices_imported, notices_unchanged, notices_skipped,
+                   notices_failed, last_progress_at, request_id,
+                   public_error_code
+            FROM ingestion_runs
+            {where}
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
+def get_ingestion_run_public(job_id: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT id, job_type, status, started_at, finished_at,
+                   current_page, pages_scanned, links_discovered,
+                   notices_imported, notices_unchanged, notices_skipped,
+                   notices_failed, last_progress_at, request_id,
+                   public_error_code
+            FROM ingestion_runs WHERE id = ?
+            """,
+            [job_id],
+        ).fetchone()
+
+
+def list_job_events_page(job_id: str, limit: int = 200, after=None):
+    where = "job_id = ?"
+    params = [job_id]
+    if after:
+        where += (
+            " AND (occurred_at > ? OR (occurred_at = ? AND id > ?))"
+        )
+        params.extend(
+            [after["occurred_at"], after["occurred_at"], after["id"]]
+        )
+    params.append(limit)
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT id, job_id, occurred_at, level, event_type,
+                   public_message, current_page, request_id
+            FROM job_events
+            WHERE {where}
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
 # ---------- official notices ----------
 
 def upsert_official_notice(notice: dict):
