@@ -260,6 +260,19 @@ SCHEMA_STATEMENTS = [
         rolled_back_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS job_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        level TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        public_message TEXT NOT NULL,
+        current_page INTEGER,
+        request_id TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_job_events_job_time ON job_events(job_id, occurred_at)",
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_notice ON notice_fetch_attempts(notice_id)",
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_time ON notice_fetch_attempts(fetched_at)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_notice ON notice_snapshots(notice_id)",
@@ -1301,6 +1314,52 @@ def latest_ingestion_run(job_type: str):
             """,
             [job_type],
         ).fetchone()
+
+
+def insert_job_event(
+    event_id: str,
+    job_id: str,
+    occurred_at: str,
+    level: str,
+    event_type: str,
+    public_message: str,
+    current_page: int | None,
+    request_id: str | None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO job_events(
+                id, job_id, occurred_at, level, event_type,
+                public_message, current_page, request_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                event_id,
+                job_id,
+                occurred_at,
+                level,
+                event_type,
+                public_message,
+                current_page,
+                request_id,
+            ],
+        )
+
+
+def list_job_events(job_id: str, limit: int = 200):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT id, job_id, occurred_at, level, event_type,
+                   public_message, current_page, request_id
+            FROM job_events
+            WHERE job_id = ?
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
+            """,
+            [job_id, min(max(limit, 1), 500)],
+        ).fetchall()
 
 
 # ---------- official notices ----------

@@ -149,12 +149,27 @@ def activate_cluster_run(run_id: str) -> None:
     db.activate_completed_cluster_run(run_id)
 
 
-def build_model_evidence(*, created_at: str, activate: bool = True) -> str:
+def build_model_evidence(
+    *,
+    created_at: str,
+    activate: bool = True,
+    job_id: str | None = None,
+) -> str:
     """Create, validate, and atomically activate one immutable build."""
+    from . import observability
+
     build_id = uuid4().hex
+    if job_id:
+        observability.record_job_event(
+            job_id, "build_started", occurred_at=created_at
+        )
     db.create_model_build(build_id, created_at)
     db.populate_model_build(build_id)
     db.validate_model_build(build_id)
+    if job_id:
+        observability.record_job_event(
+            job_id, "build_validated", occurred_at=created_at
+        )
     notice_count, locality_count, pair_count = db.model_build_counts(build_id)
     db.complete_model_build(
         build_id,
@@ -165,4 +180,8 @@ def build_model_evidence(*, created_at: str, activate: bool = True) -> str:
     )
     if activate:
         db.activate_completed_model_build(build_id)
+        if job_id:
+            observability.record_job_event(
+                job_id, "build_activated", occurred_at=created_at
+            )
     return build_id

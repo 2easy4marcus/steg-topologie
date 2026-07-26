@@ -166,6 +166,9 @@ def crawl_archive(
     job_id, _ = observability.acquire_evidence_job_lock(ttl_minutes=30)
     started_at = datetime.now(timezone.utc).isoformat()
     db.start_ingestion_run(job_id, "backfill", started_at)
+    observability.record_job_event(
+        job_id, "job_started", occurred_at=started_at
+    )
     progress = {"last_page": -1, "links": 0}
 
     def persist_progress(page, new_links_count, imported_so_far):
@@ -180,6 +183,12 @@ def crawl_archive(
             notices_imported=imported_so_far,
             last_progress_at=datetime.now(timezone.utc).isoformat(),
         )
+        observability.record_job_event(
+            job_id,
+            "page_completed",
+            occurred_at=datetime.now(timezone.utc).isoformat(),
+            current_page=page,
+        )
         if on_progress is not None:
             on_progress(page, new_links_count, imported_so_far)
 
@@ -191,6 +200,11 @@ def crawl_archive(
             job_id,
             "completed",
             datetime.now(timezone.utc).isoformat(),
+        )
+        observability.record_job_event(
+            job_id,
+            "job_completed",
+            occurred_at=datetime.now(timezone.utc).isoformat(),
         )
         return imported
     except Exception as exc:
@@ -204,6 +218,11 @@ def crawl_archive(
                 else "job_failed"
             ),
             internal_error_detail=str(exc),
+        )
+        observability.record_job_event(
+            job_id,
+            "job_failed",
+            occurred_at=datetime.now(timezone.utc).isoformat(),
         )
         raise
     finally:

@@ -18,7 +18,7 @@ import community as community_louvain
 
 from . import db
 from . import geocoding
-from . import model_readiness
+from . import model_readiness, observability
 
 MIN_NOTICES = 30
 MIN_LOCALITIES = 10
@@ -148,6 +148,11 @@ def run_recluster() -> dict:
         ALGORITHM_VERSION,
         datetime.now(timezone.utc).isoformat(),
     )
+    observability.record_job_event(
+        run_id,
+        "cluster_started",
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+    )
     db.write_cluster_members(run_id, partition, stability)
     db.complete_cluster_run(
         run_id,
@@ -156,6 +161,11 @@ def run_recluster() -> dict:
         len(partition),
     )
     db.activate_completed_cluster_run(run_id)
+    observability.record_job_event(
+        run_id,
+        "cluster_activated",
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+    )
     # Preserve legacy stability history while cluster consumers migrate.
     db.write_cluster_run(run_date, partition, stability)
 

@@ -41,10 +41,12 @@ def process_notice(notice: dict, now: str) -> None:
     return evidence_pipeline.persist_notice(notice, fetched_at=now)
 
 
-def rebuild_if_changed(changed: bool, now: str):
+def rebuild_if_changed(changed: bool, now: str, job_id: str | None = None):
     if not changed:
         return None
-    return evidence_pipeline.build_model_evidence(created_at=now)
+    return evidence_pipeline.build_model_evidence(
+        created_at=now, job_id=job_id
+    )
 
 
 def run(verbose: bool = True) -> int:
@@ -52,6 +54,9 @@ def run(verbose: bool = True) -> int:
     job_id, _ = observability.acquire_evidence_job_lock(ttl_minutes=15)
     started_at = datetime.now(timezone.utc).isoformat()
     db.start_ingestion_run(job_id, "scrape", started_at)
+    observability.record_job_event(
+        job_id, "job_started", occurred_at=started_at
+    )
     try:
         notices = steg_scraper.scrape_current_notices()
         now = datetime.now(timezone.utc).isoformat()
@@ -63,9 +68,14 @@ def run(verbose: bool = True) -> int:
             changed = notice_changed or changed
             imported += int(notice_changed)
             unchanged += int(not notice_changed)
+            observability.record_job_event(
+                job_id,
+                "notice_imported" if notice_changed else "notice_unchanged",
+                occurred_at=now,
+            )
             if verbose:
                 print(f"  upserted: {n['title']}")
-        rebuild_if_changed(changed, now)
+        rebuild_if_changed(changed, now, job_id)
         db.update_ingestion_run(
             job_id,
             links_discovered=len(notices),
@@ -74,6 +84,9 @@ def run(verbose: bool = True) -> int:
             last_progress_at=now,
         )
         db.finish_ingestion_run(job_id, "completed", now)
+        observability.record_job_event(
+            job_id, "job_completed", occurred_at=now
+        )
         if verbose:
             if not notices:
                 print("Done. 0 notice(s) currently on STEG's homepage "
@@ -94,6 +107,9 @@ def run(verbose: bool = True) -> int:
             finished_at,
             public_error_code=code,
             internal_error_detail=str(exc),
+        )
+        observability.record_job_event(
+            job_id, "job_failed", occurred_at=finished_at
         )
         raise
     finally:
