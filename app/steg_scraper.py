@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.steg.com.tn"
 HOMEPAGE_URL = f"{BASE_URL}/fr"
+PARSER_VERSION = "2"
 
 HEADERS = {
     "User-Agent": (
@@ -141,7 +142,14 @@ def parse_notice_detail(url: str) -> dict:
     title = _page_title(soup)
     body = soup.select_one(".field-name-body .field-item")
     if not body:
-        return {"title": title, "raw_text": None, "zones": [], "subregions": [], "time_window_sentence": None}
+        return {
+            "title": title,
+            "raw_text": None,
+            "raw_html": str(soup),
+            "zones": [],
+            "subregions": [],
+            "time_window_sentence": None,
+        }
 
     zones, subregions = _extract_zones(body)
     raw_text = body.get_text("\n", strip=True)
@@ -154,6 +162,7 @@ def parse_notice_detail(url: str) -> dict:
     return {
         "title": title,
         "raw_text": raw_text,
+        "raw_html": str(soup),
         "zones": zones,
         "subregions": subregions,
         "time_window_sentence": time_window_sentence,
@@ -177,5 +186,6 @@ def scrape_current_notices() -> list:
             "zones": detail["zones"],
             "subregions": detail["subregions"],
             "raw_text": detail["raw_text"],
+            "raw_html": detail["raw_html"],
         })
     return results

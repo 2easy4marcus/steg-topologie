@@ -16,6 +16,7 @@ from rapidfuzz import fuzz, process
 from . import db
 
 FUZZY_THRESHOLD = 90
+NORMALIZATION_VERSION = "1"
 _DIACRITICS_RE = re.compile(r"[\u0610-\u061A\u064B-\u0652\u0670\u06D6-\u06ED]")
 _TATWEEL_RE = re.compile(r"ـ")
 _ALEF_VARIANTS = "أإآ"

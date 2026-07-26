@@ -1,6 +1,87 @@
 """Atomic orchestration for evidence, model-build, and cluster state."""
 
-from . import db
+import hashlib
+from datetime import datetime
+
+from . import db, locality_dedup, steg_scraper
+from .evidence_models import (
+    ParsedLocality,
+    ParsedNoticeEvidence,
+    ParseStatus,
+)
+
+
+def processing_identity(
+    snapshot_id: str, parser_version: str, normalization_version: str
+) -> str:
+    value = "\0".join(
+        [snapshot_id, parser_version, normalization_version]
+    ).encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
+def _normalized_notice_date(raw_date: str | None):
+    if not raw_date:
+        return None
+    try:
+        return datetime.strptime(raw_date, "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def evidence_from_notice(
+    notice: dict, *, snapshot_id: str
+) -> ParsedNoticeEvidence:
+    warnings = []
+    raw_date = notice.get("notice_date")
+    normalized_date = _normalized_notice_date(raw_date)
+    if not raw_date:
+        warnings.append("missing_notice_date")
+    elif normalized_date is None:
+        warnings.append("invalid_notice_date")
+    if steg_scraper.NOTICE_TITLE_MARKER not in notice.get("title", ""):
+        warnings.append("unmatched_notice_title")
+
+    raw_entries = []
+    subregions = notice.get("subregions") or []
+    if subregions:
+        for subregion in subregions:
+            name = subregion.get("name")
+            zones = [zone for zone in subregion.get("zones", []) if zone]
+            if zones and not name:
+                warnings.append("missing_subregion_header")
+            raw_entries.extend((zone, name) for zone in zones)
+    else:
+        raw_entries.extend(
+            (zone, None) for zone in notice.get("zones", []) if zone
+        )
+
+    localities = [
+        ParsedLocality(
+            raw_name=raw_name,
+            canonical_name=locality_dedup.resolve_locality(raw_name),
+            subregion_name=subregion_name,
+            ordinal=ordinal,
+        )
+        for ordinal, (raw_name, subregion_name) in enumerate(raw_entries)
+    ]
+    if not localities:
+        warnings.append("empty_locality_list")
+
+    warnings = list(dict.fromkeys(warnings))
+    return ParsedNoticeEvidence(
+        notice_id=notice["id"],
+        snapshot_id=snapshot_id,
+        source_url=notice["url"],
+        title=notice.get("title", ""),
+        notice_date_raw=raw_date,
+        notice_date_iso=normalized_date,
+        parser_version=steg_scraper.PARSER_VERSION,
+        normalization_version=locality_dedup.NORMALIZATION_VERSION,
+        parse_status=ParseStatus.WARNING if warnings else ParseStatus.OK,
+        localities=localities,
+        warnings=warnings,
+    )
 
 
 def activate_parse(notice_id: str, parse_id: str, activated_at: str) -> None:

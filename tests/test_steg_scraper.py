@@ -55,3 +55,4 @@ def test_parse_notice_detail_extracts_title_from_page_title_tag(monkeypatch):
     detail = steg_scraper.parse_notice_detail("http://example.test/notice")
 
     assert detail["title"] == "إشعار بانقطاع الكهرباء - جهة الشمال - 11:00 20/07/2026"
+    assert "raw_html" in detail
