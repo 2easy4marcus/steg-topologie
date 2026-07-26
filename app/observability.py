@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from uuid import uuid4
 
 from . import db
@@ -103,3 +104,32 @@ def record_job_event(
         current_page,
         request_id,
     )
+
+
+def cleanup_after_scheduled_job(
+    *, succeeded: bool, now: str | None = None
+) -> None:
+    """Apply retention after success without changing the job outcome."""
+    if not succeeded:
+        return
+    current = (
+        datetime.fromisoformat(now.replace("Z", "+00:00"))
+        if now
+        else datetime.now(timezone.utc)
+    )
+    try:
+        while True:
+            jobs_deleted, events_deleted = db.delete_expired_operations_batch(
+                jobs_before=(current - timedelta(days=90)).isoformat(),
+                events_before=(current - timedelta(days=30)).isoformat(),
+                batch_size=500,
+            )
+            if jobs_deleted == 0 and events_deleted == 0:
+                break
+    except Exception:
+        print(json.dumps({
+            "timestamp": current.isoformat(),
+            "level": "warning",
+            "event": "operations_retention_failed",
+            "message": "Operations retention cleanup failed.",
+        }))

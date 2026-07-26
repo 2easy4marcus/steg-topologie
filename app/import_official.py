@@ -87,6 +87,9 @@ def run(verbose: bool = True) -> int:
         observability.record_job_event(
             job_id, "job_completed", occurred_at=now
         )
+        observability.cleanup_after_scheduled_job(
+            succeeded=True, now=now
+        )
         if verbose:
             if not notices:
                 print("Done. 0 notice(s) currently on STEG's homepage "

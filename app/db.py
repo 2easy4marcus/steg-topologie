@@ -1430,6 +1430,39 @@ def list_job_events_page(job_id: str, limit: int = 200, after=None):
         ).fetchall()
 
 
+def delete_expired_operations_batch(
+    *, jobs_before: str, events_before: str, batch_size: int = 500
+) -> tuple[int, int]:
+    """Delete one bounded batch of sanitized operations history."""
+    limit = min(max(batch_size, 1), 500)
+    with get_conn() as conn:
+        events_result = conn.execute(
+            """
+            DELETE FROM job_events
+            WHERE id IN (
+                SELECT id FROM job_events
+                WHERE occurred_at < ?
+                ORDER BY occurred_at ASC, id ASC
+                LIMIT ?
+            )
+            """,
+            [events_before, limit],
+        )
+        jobs_result = conn.execute(
+            """
+            DELETE FROM ingestion_runs
+            WHERE id IN (
+                SELECT id FROM ingestion_runs
+                WHERE started_at < ? AND status IN ('completed', 'failed')
+                ORDER BY started_at ASC, id ASC
+                LIMIT ?
+            )
+            """,
+            [jobs_before, limit],
+        )
+    return jobs_result.rows_affected, events_result.rows_affected
+
+
 # ---------- official notices ----------
 
 def upsert_official_notice(notice: dict):

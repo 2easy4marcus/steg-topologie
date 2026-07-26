@@ -196,15 +196,20 @@ def crawl_archive(
         imported = _crawl_archive_unlocked(
             max_pages, verbose, persist_progress
         )
+        finished_at = datetime.now(timezone.utc).isoformat()
         db.finish_ingestion_run(
             job_id,
             "completed",
-            datetime.now(timezone.utc).isoformat(),
+            finished_at,
         )
         observability.record_job_event(
             job_id,
             "job_completed",
-            occurred_at=datetime.now(timezone.utc).isoformat(),
+            occurred_at=finished_at,
+        )
+        observability.cleanup_after_scheduled_job(
+            succeeded=True,
+            now=finished_at,
         )
         return imported
     except Exception as exc:
