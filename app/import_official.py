@@ -13,12 +13,13 @@ can't be reached after retries -- that's expected to happen occasionally
 since it's a small, sometimes-slow government site. Just try again later.
 """
 
-import itertools
 import sys
 from datetime import datetime, timezone
 
 from . import db
+from . import evidence_pipeline
 from . import locality_dedup
+from . import observability
 from . import steg_scraper
 
 
@@ -37,29 +38,36 @@ def process_notice(notice: dict, now: str) -> None:
     that decides how a notice turns into DB writes."""
     notice["scraped_at"] = now
     db.upsert_official_notice(notice)
+    return evidence_pipeline.persist_notice(notice, fetched_at=now)
 
-    localities = sorted(set(_localities_in_notice(notice)))
-    for locality in localities:
-        db.increment_locality_notice_count(locality)
-    for a, b in itertools.combinations(localities, 2):
-        db.increment_cooccurrence(a, b, seen_at=now)
+
+def rebuild_if_changed(changed: bool, now: str):
+    if not changed:
+        return None
+    return evidence_pipeline.build_model_evidence(created_at=now)
 
 
 def run(verbose: bool = True) -> int:
     db.init_db()
-    notices = steg_scraper.scrape_current_notices()
-    now = datetime.now(timezone.utc).isoformat()
-    for n in notices:
-        process_notice(n, now)
+    job_id, _ = observability.acquire_evidence_job_lock(ttl_minutes=15)
+    try:
+        notices = steg_scraper.scrape_current_notices()
+        now = datetime.now(timezone.utc).isoformat()
+        changed = False
+        for n in notices:
+            changed = process_notice(n, now) or changed
+            if verbose:
+                print(f"  upserted: {n['title']}")
+        rebuild_if_changed(changed, now)
         if verbose:
-            print(f"  upserted: {n['title']}")
-    if verbose:
-        if not notices:
-            print("Done. 0 notice(s) currently on STEG's homepage "
-                  "(this is normal when no cuts are announced right now).")
-        print(f"Done. {len(notices)} notice(s) processed, "
-              f"{db.count_official_notices()} total in DB.")
-    return len(notices)
+            if not notices:
+                print("Done. 0 notice(s) currently on STEG's homepage "
+                      "(this is normal when no cuts are announced right now).")
+            print(f"Done. {len(notices)} notice(s) processed, "
+                  f"{db.count_official_notices()} total in DB.")
+        return len(notices)
+    finally:
+        observability.release_job_lock("evidence-pipeline", job_id)
 
 
 if __name__ == "__main__":

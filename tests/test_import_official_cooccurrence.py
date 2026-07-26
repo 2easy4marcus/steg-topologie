@@ -91,9 +91,71 @@ def test_process_notice_upserts_and_records_cooccurrence():
         "time_window_sentence": "s", "zones": ["Dekka", "Tozeur"],
         "subregions": [], "raw_text": "raw",
     }
-    import_official.process_notice(notice, "2026-07-23T18:00:00+00:00")
+    changed = import_official.process_notice(
+        notice, "2026-07-23T18:00:00+00:00"
+    )
+    import_official.rebuild_if_changed(
+        changed, "2026-07-23T18:00:00+00:00"
+    )
 
     rows = {(r["locality_a"], r["locality_b"]): r["notice_count"] for r in db.list_cooccurrences()}
     assert rows[("Dekka", "Tozeur")] == 1
     assert db.count_official_notices() == 1
     assert notice["scraped_at"] == "2026-07-23T18:00:00+00:00"
+
+
+def test_processing_identical_notice_twice_does_not_inflate_evidence():
+    notice = {
+        "id": "pn1", "title": "t", "url": "http://x",
+        "region": "جهة الشمال", "notice_date": "23/07/2026",
+        "notice_time": "18:00", "time_window_sentence": "s",
+        "zones": ["Dekka", "Tozeur"], "subregions": [],
+        "raw_text": "raw", "raw_html": "<html>Dekka Tozeur</html>",
+    }
+
+    changed_first = import_official.process_notice(
+        notice, "2026-07-23T18:00:00+00:00"
+    )
+    changed_second = import_official.process_notice(
+        notice, "2026-07-23T19:00:00+00:00"
+    )
+    if changed_first:
+        import_official.rebuild_if_changed(True, "2026-07-23T18:00:00+00:00")
+    if changed_second:
+        import_official.rebuild_if_changed(True, "2026-07-23T19:00:00+00:00")
+
+    rows = db.list_cooccurrences()
+    assert changed_first is True
+    assert changed_second is False
+    assert len(rows) == 1
+    assert rows[0]["notice_count"] == 1
+    assert db.get_locality_notice_counts()["Dekka"] == 1
+
+
+def test_changed_content_replaces_active_parse_and_rebuilds():
+    notice = {
+        "id": "pn1", "title": "t", "url": "http://x",
+        "notice_date": "23/07/2026", "zones": ["A", "B"],
+        "subregions": [], "raw_text": "A B",
+        "raw_html": "<html>A B</html>",
+    }
+    assert import_official.process_notice(
+        notice, "2026-07-23T18:00:00+00:00"
+    )
+    import_official.rebuild_if_changed(True, "2026-07-23T18:00:00+00:00")
+
+    notice.update(
+        zones=["A", "C"],
+        raw_text="A C",
+        raw_html="<html>A C</html>",
+    )
+    assert import_official.process_notice(
+        notice, "2026-07-23T19:00:00+00:00"
+    )
+    import_official.rebuild_if_changed(True, "2026-07-23T19:00:00+00:00")
+
+    pairs = {
+        (row["locality_a"], row["locality_b"])
+        for row in db.list_cooccurrences()
+    }
+    assert pairs == {("A", "C")}

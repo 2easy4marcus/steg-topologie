@@ -1,6 +1,8 @@
 """Safe job coordination and operational metadata."""
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from . import db
 
@@ -9,6 +11,28 @@ from . import db
 class LockResult:
     acquired: bool
     owner_job_id: str
+
+
+class JobAlreadyRunning(RuntimeError):
+    def __init__(self, owner_job_id: str):
+        super().__init__(f"job already running: {owner_job_id}")
+        self.owner_job_id = owner_job_id
+
+
+def acquire_evidence_job_lock(
+    *, ttl_minutes: int
+) -> tuple[str, LockResult]:
+    now = datetime.now(timezone.utc)
+    owner_job_id = uuid4().hex
+    result = acquire_job_lock(
+        "evidence-pipeline",
+        owner_job_id,
+        acquired_at=now.isoformat(),
+        expires_at=(now + timedelta(minutes=ttl_minutes)).isoformat(),
+    )
+    if not result.acquired:
+        raise JobAlreadyRunning(result.owner_job_id)
+    return owner_job_id, result
 
 
 def acquire_job_lock(

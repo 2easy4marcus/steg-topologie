@@ -367,6 +367,113 @@ def get_notice_state(notice_id: str):
         ).fetchone()
 
 
+def get_or_create_snapshot(
+    notice_id: str,
+    source_url: str,
+    content_hash: str,
+    raw_html: str,
+    fetched_at: str,
+):
+    with get_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT * FROM notice_snapshots
+            WHERE notice_id = ? AND content_hash = ?
+            """,
+            [notice_id, content_hash],
+        ).fetchone()
+        if existing:
+            return existing, False
+        snapshot_id = f"{notice_id}-{content_hash[:20]}"
+        conn.execute(
+            """
+            INSERT INTO notice_snapshots(
+                snapshot_id, notice_id, source_url, content_hash,
+                raw_html, first_fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                snapshot_id,
+                notice_id,
+                source_url,
+                content_hash,
+                raw_html,
+                fetched_at,
+            ],
+        )
+        return conn.execute(
+            "SELECT * FROM notice_snapshots WHERE snapshot_id = ?",
+            [snapshot_id],
+        ).fetchone(), True
+
+
+def save_parse_with_localities(evidence, parsed_at: str) -> bool:
+    parse_id = processing_parse_id(
+        evidence.snapshot_id,
+        evidence.parser_version,
+        evidence.normalization_version,
+    )
+    with get_transaction() as tx:
+        existing = tx.execute(
+            "SELECT parse_id FROM notice_parses WHERE parse_id = ?",
+            [parse_id],
+        ).fetchone()
+        if existing:
+            return False
+        tx.execute(
+            """
+            INSERT INTO notice_parses(
+                parse_id, snapshot_id, notice_id, title, notice_date_raw,
+                notice_date_iso, parser_version, normalization_version,
+                parse_status, parse_warnings, parsed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                parse_id,
+                evidence.snapshot_id,
+                evidence.notice_id,
+                evidence.title,
+                evidence.notice_date_raw,
+                evidence.notice_date_iso.isoformat()
+                if evidence.notice_date_iso
+                else None,
+                evidence.parser_version,
+                evidence.normalization_version,
+                evidence.parse_status.value,
+                json.dumps(evidence.warnings, ensure_ascii=False),
+                parsed_at,
+            ],
+        )
+        for locality in evidence.localities:
+            tx.execute(
+                """
+                INSERT INTO notice_localities(
+                    parse_id, ordinal, raw_name, canonical_name,
+                    subregion_name
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    parse_id,
+                    locality.ordinal,
+                    locality.raw_name,
+                    locality.canonical_name,
+                    locality.subregion_name,
+                ],
+            )
+    return True
+
+
+def processing_parse_id(
+    snapshot_id: str, parser_version: str, normalization_version: str
+) -> str:
+    import hashlib
+
+    value = "\0".join(
+        [snapshot_id, parser_version, normalization_version]
+    ).encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
 def activate_notice_parse(
     notice_id: str, parse_id: str, activated_at: str
 ) -> None:
@@ -903,6 +1010,9 @@ def increment_locality_notice_count(locality: str):
 
 def get_locality_notice_counts() -> dict:
     """{locality: number of distinct notices it has appeared in}."""
+    build_id = active_build_id()
+    if build_id:
+        return build_locality_counts(build_id)
     with get_conn() as conn:
         rows = conn.execute("SELECT locality, notice_count FROM locality_notice_counts").fetchall()
     return {r["locality"]: r["notice_count"] for r in rows}
@@ -923,15 +1033,33 @@ def increment_cooccurrence(locality_a: str, locality_b: str, seen_at: str = ""):
 
 
 def list_cooccurrences():
+    build_id = active_build_id()
+    if build_id:
+        rows = build_cooccurrences(build_id)
+        return [
+            {
+                **row,
+                "last_seen": row["last_observed_on"],
+            }
+            for row in rows
+        ]
     with get_conn() as conn:
         return conn.execute("SELECT * FROM cooccurrences").fetchall()
 
 
 def total_notice_count() -> int:
+    build_id = active_build_id()
+    if build_id:
+        public = get_model_build_public(build_id)
+        return public["notice_count"]
     return count_official_notices()
 
 
 def distinct_locality_count() -> int:
+    build_id = active_build_id()
+    if build_id:
+        public = get_model_build_public(build_id)
+        return public["locality_count"]
     with get_conn() as conn:
         return conn.execute("SELECT COUNT(*) c FROM localities").fetchone()["c"]
 

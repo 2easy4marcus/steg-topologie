@@ -27,6 +27,7 @@ from urllib.parse import urljoin
 
 from . import db
 from . import import_official
+from . import observability
 from . import steg_scraper
 
 ARCHIVE_URL = f"{steg_scraper.BASE_URL}/fr/news"
@@ -63,7 +64,11 @@ def _archive_page_links(page: int) -> list:
     return sorted(hrefs)
 
 
-def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True, on_progress=None) -> int:
+def _crawl_archive_unlocked(
+    max_pages: int = DEFAULT_MAX_PAGES,
+    verbose: bool = True,
+    on_progress=None,
+) -> int:
     """Crawl the archive page by page, importing any outage notice not
     already known, until a page contributes nothing new or max_pages is
     reached. Returns the number of newly-imported notices.
@@ -76,6 +81,7 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True, on_p
     db.init_db()
     now = datetime.now(timezone.utc).isoformat()
     imported = 0
+    evidence_changed = False
     seen_ids = set()
 
     for page in range(max_pages):
@@ -118,7 +124,10 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True, on_p
                 "subregions": detail["subregions"],
                 "raw_text": detail["raw_text"],
             }
-            import_official.process_notice(notice, now)
+            evidence_changed = (
+                import_official.process_notice(notice, now)
+                or evidence_changed
+            )
             imported += 1
             if verbose:
                 print(f"  imported: {title}")
@@ -143,9 +152,22 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True, on_p
 
         time.sleep(PAGE_DELAY_SECONDS)
 
+    import_official.rebuild_if_changed(evidence_changed, now)
     if verbose:
         print(f"Done. {imported} new notice(s) imported, {db.count_official_notices()} total in DB.")
     return imported
+
+
+def crawl_archive(
+    max_pages: int = DEFAULT_MAX_PAGES,
+    verbose: bool = True,
+    on_progress=None,
+) -> int:
+    job_id, _ = observability.acquire_evidence_job_lock(ttl_minutes=30)
+    try:
+        return _crawl_archive_unlocked(max_pages, verbose, on_progress)
+    finally:
+        observability.release_job_lock("evidence-pipeline", job_id)
 
 
 def get_status() -> dict:

@@ -1,6 +1,7 @@
 """Atomic orchestration for evidence, model-build, and cluster state."""
 
 import hashlib
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -83,6 +84,57 @@ def evidence_from_notice(
         localities=localities,
         warnings=warnings,
     )
+
+
+def _raw_snapshot(notice: dict) -> str:
+    raw_html = notice.get("raw_html")
+    if raw_html:
+        return raw_html
+    return json.dumps(
+        {
+            "title": notice.get("title"),
+            "notice_date": notice.get("notice_date"),
+            "zones": notice.get("zones", []),
+            "subregions": notice.get("subregions", []),
+            "raw_text": notice.get("raw_text"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def persist_notice(notice: dict, *, fetched_at: str) -> bool:
+    """Persist and activate a versioned notice parse.
+
+    Return True only when the notice's active evidence changes.
+    """
+    raw_html = _raw_snapshot(notice)
+    digest = hashlib.sha256(raw_html.encode("utf-8")).hexdigest()
+    before = db.get_notice_state(notice["id"])
+    previous_parse = before["active_parse_id"] if before else None
+    snapshot, _ = db.get_or_create_snapshot(
+        notice["id"],
+        notice["url"],
+        digest,
+        raw_html,
+        fetched_at,
+    )
+    db.select_latest_snapshot(notice["id"], snapshot["snapshot_id"], fetched_at)
+    evidence = evidence_from_notice(
+        notice, snapshot_id=snapshot["snapshot_id"]
+    )
+    db.save_parse_with_localities(evidence, fetched_at)
+    parse_id = processing_identity(
+        snapshot["snapshot_id"],
+        evidence.parser_version,
+        evidence.normalization_version,
+    )
+    try:
+        db.activate_notice_parse(notice["id"], parse_id, fetched_at)
+    except ValueError:
+        pass
+    after = db.get_notice_state(notice["id"])
+    return after["active_parse_id"] != previous_parse
 
 
 def activate_parse(notice_id: str, parse_id: str, activated_at: str) -> None:
