@@ -221,6 +221,15 @@ SCHEMA_STATEMENTS = [
         active_cluster_run_id TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS job_locks (
+        lock_name TEXT PRIMARY KEY,
+        owner_job_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_notice ON notice_fetch_attempts(notice_id)",
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_time ON notice_fetch_attempts(fetched_at)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_notice ON notice_snapshots(notice_id)",
@@ -249,6 +258,10 @@ class _Result:
     def lastrowid(self):
         return self._rs.last_insert_rowid
 
+    @property
+    def rows_affected(self):
+        return self._rs.rows_affected
+
 
 class _Conn:
     def __init__(self, client):
@@ -256,6 +269,17 @@ class _Conn:
 
     def execute(self, sql, params=None):
         return _Result(self._client.execute(sql, list(params or [])))
+
+
+class _Transaction(_Conn):
+    def commit(self):
+        self._client.commit()
+
+    def rollback(self):
+        self._client.rollback()
+
+    def close(self):
+        self._client.close()
 
 
 @contextmanager
@@ -267,6 +291,24 @@ def get_conn():
     try:
         yield _Conn(client)
     finally:
+        client.close()
+
+
+@contextmanager
+def get_transaction():
+    kwargs = {"url": DB_URL}
+    if AUTH_TOKEN:
+        kwargs["auth_token"] = AUTH_TOKEN
+    client = libsql_client.create_client_sync(**kwargs)
+    transaction = _Transaction(client.transaction())
+    try:
+        yield transaction
+        transaction.commit()
+    except Exception:
+        transaction.rollback()
+        raise
+    finally:
+        transaction.close()
         client.close()
 
 
@@ -288,6 +330,264 @@ def get_model_build_public(build_id: str):
             """,
             [build_id],
         ).fetchone()
+
+
+# ---------- evidence state and build activation ----------
+
+def select_latest_snapshot(
+    notice_id: str, snapshot_id: str, updated_at: str
+) -> None:
+    with get_transaction() as tx:
+        snapshot = tx.execute(
+            """
+            SELECT snapshot_id FROM notice_snapshots
+            WHERE snapshot_id = ? AND notice_id = ?
+            """,
+            [snapshot_id, notice_id],
+        ).fetchone()
+        if snapshot is None:
+            raise ValueError("snapshot does not belong to notice")
+        tx.execute(
+            """
+            INSERT INTO notice_state(
+                notice_id, latest_snapshot_id, active_parse_id, updated_at
+            ) VALUES (?, ?, NULL, ?)
+            ON CONFLICT(notice_id) DO UPDATE SET
+                latest_snapshot_id = excluded.latest_snapshot_id,
+                updated_at = excluded.updated_at
+            """,
+            [notice_id, snapshot_id, updated_at],
+        )
+
+
+def get_notice_state(notice_id: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM notice_state WHERE notice_id = ?", [notice_id]
+        ).fetchone()
+
+
+def activate_notice_parse(
+    notice_id: str, parse_id: str, activated_at: str
+) -> None:
+    with get_transaction() as tx:
+        row = tx.execute(
+            """
+            SELECT p.parse_status, p.snapshot_id, s.latest_snapshot_id,
+                   (SELECT COUNT(DISTINCT canonical_name)
+                    FROM notice_localities nl
+                    WHERE nl.parse_id = p.parse_id) AS locality_count
+            FROM notice_parses p
+            JOIN notice_state s ON s.notice_id = p.notice_id
+            WHERE p.parse_id = ? AND p.notice_id = ?
+            """,
+            [parse_id, notice_id],
+        ).fetchone()
+        if row is None or row["snapshot_id"] != row["latest_snapshot_id"]:
+            raise ValueError("parse does not belong to latest snapshot")
+        eligible = row["parse_status"] == "ok" or (
+            row["parse_status"] == "warning" and row["locality_count"] >= 2
+        )
+        if not eligible:
+            raise ValueError("parse is not eligible for activation")
+        tx.execute(
+            """
+            UPDATE notice_state
+            SET active_parse_id = ?, updated_at = ?
+            WHERE notice_id = ?
+            """,
+            [parse_id, activated_at, notice_id],
+        )
+
+
+def create_model_build(build_id: str, created_at: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO model_builds(build_id, status, created_at)
+            VALUES (?, 'building', ?)
+            """,
+            [build_id, created_at],
+        )
+
+
+def complete_model_build(
+    build_id: str,
+    completed_at: str,
+    notice_count: int,
+    locality_count: int,
+    pair_count: int,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE model_builds
+            SET status = 'completed', completed_at = ?, notice_count = ?,
+                locality_count = ?, pair_count = ?
+            WHERE build_id = ? AND status = 'building'
+            """,
+            [
+                completed_at,
+                notice_count,
+                locality_count,
+                pair_count,
+                build_id,
+            ],
+        )
+
+
+def activate_completed_model_build(build_id: str) -> None:
+    with get_transaction() as tx:
+        build = tx.execute(
+            "SELECT status FROM model_builds WHERE build_id = ?", [build_id]
+        ).fetchone()
+        if build is None or build["status"] != "completed":
+            raise ValueError("model build must be completed before activation")
+        tx.execute(
+            """
+            INSERT INTO model_state(singleton_id, active_build_id)
+            VALUES (1, ?)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                active_build_id = excluded.active_build_id
+            """,
+            [build_id],
+        )
+
+
+def active_build_id():
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT active_build_id FROM model_state WHERE singleton_id = 1"
+        ).fetchone()
+        return row["active_build_id"] if row else None
+
+
+def create_cluster_run(
+    run_id: str,
+    build_id: str,
+    algorithm_version: str,
+    started_at: str,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO cluster_runs(
+                run_id, build_id, algorithm_version, status, started_at
+            ) VALUES (?, ?, ?, 'running', ?)
+            """,
+            [run_id, build_id, algorithm_version, started_at],
+        )
+
+
+def complete_cluster_run(
+    run_id: str,
+    completed_at: str,
+    cluster_count: int,
+    locality_count: int,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE cluster_runs
+            SET status = 'completed', completed_at = ?, cluster_count = ?,
+                locality_count = ?
+            WHERE run_id = ? AND status = 'running'
+            """,
+            [completed_at, cluster_count, locality_count, run_id],
+        )
+
+
+def activate_completed_cluster_run(run_id: str) -> None:
+    with get_transaction() as tx:
+        row = tx.execute(
+            """
+            SELECT cr.status, cr.build_id, ms.active_build_id
+            FROM cluster_runs cr
+            LEFT JOIN model_state ms ON ms.singleton_id = 1
+            WHERE cr.run_id = ?
+            """,
+            [run_id],
+        ).fetchone()
+        if row is None or row["status"] != "completed":
+            raise ValueError("cluster run must be completed before activation")
+        if row["build_id"] != row["active_build_id"]:
+            raise ValueError("cluster run does not reference active build")
+        tx.execute(
+            """
+            INSERT INTO cluster_state(singleton_id, active_cluster_run_id)
+            VALUES (1, ?)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                active_cluster_run_id = excluded.active_cluster_run_id
+            """,
+            [run_id],
+        )
+
+
+def active_cluster_run_id():
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT active_cluster_run_id FROM cluster_state
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        return row["active_cluster_run_id"] if row else None
+
+
+# ---------- job locks ----------
+
+def acquire_lock(
+    lock_name: str,
+    owner_job_id: str,
+    acquired_at: str,
+    expires_at: str,
+):
+    with get_conn() as conn:
+        result = conn.execute(
+            """
+            INSERT INTO job_locks(
+                lock_name, owner_job_id, acquired_at, heartbeat_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(lock_name) DO UPDATE SET
+                owner_job_id = excluded.owner_job_id,
+                acquired_at = excluded.acquired_at,
+                heartbeat_at = excluded.heartbeat_at,
+                expires_at = excluded.expires_at
+            WHERE job_locks.expires_at < excluded.acquired_at
+            """,
+            [lock_name, owner_job_id, acquired_at, acquired_at, expires_at],
+        )
+        row = conn.execute(
+            "SELECT owner_job_id FROM job_locks WHERE lock_name = ?",
+            [lock_name],
+        ).fetchone()
+        return result.rows_affected > 0, row["owner_job_id"]
+
+
+def heartbeat_lock(
+    lock_name: str,
+    owner_job_id: str,
+    heartbeat_at: str,
+    expires_at: str,
+) -> bool:
+    with get_conn() as conn:
+        result = conn.execute(
+            """
+            UPDATE job_locks SET heartbeat_at = ?, expires_at = ?
+            WHERE lock_name = ? AND owner_job_id = ?
+            """,
+            [heartbeat_at, expires_at, lock_name, owner_job_id],
+        )
+        return result.rows_affected > 0
+
+
+def release_lock(lock_name: str, owner_job_id: str) -> bool:
+    with get_conn() as conn:
+        result = conn.execute(
+            "DELETE FROM job_locks WHERE lock_name = ? AND owner_job_id = ?",
+            [lock_name, owner_job_id],
+        )
+        return result.rows_affected > 0
 
 
 # ---------- official notices ----------
