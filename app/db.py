@@ -192,6 +192,14 @@ def count_official_notices() -> int:
         return conn.execute("SELECT COUNT(*) c FROM official_notices").fetchone()["c"]
 
 
+def official_notice_exists(notice_id: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM official_notices WHERE id = ?", [notice_id]
+        ).fetchone()
+        return row is not None
+
+
 # ---------- user reports ----------
 
 def create_user_report(report: dict) -> int:

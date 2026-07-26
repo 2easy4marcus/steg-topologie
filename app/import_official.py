@@ -30,20 +30,27 @@ def _localities_in_notice(notice: dict) -> list:
     return [locality_dedup.resolve_locality(z) for z in raw if z]
 
 
+def process_notice(notice: dict, now: str) -> None:
+    """Upsert one scraped notice and update the derived locality/co-occurrence
+    tables from it. Shared by the live scrape (run(), below) and the
+    historical backfill (app/backfill_official.py) -- this is the one place
+    that decides how a notice turns into DB writes."""
+    notice["scraped_at"] = now
+    db.upsert_official_notice(notice)
+
+    localities = sorted(set(_localities_in_notice(notice)))
+    for locality in localities:
+        db.increment_locality_notice_count(locality)
+    for a, b in itertools.combinations(localities, 2):
+        db.increment_cooccurrence(a, b, seen_at=now)
+
+
 def run(verbose: bool = True) -> int:
     db.init_db()
     notices = steg_scraper.scrape_current_notices()
     now = datetime.now(timezone.utc).isoformat()
     for n in notices:
-        n["scraped_at"] = now
-        db.upsert_official_notice(n)
-
-        localities = sorted(set(_localities_in_notice(n)))
-        for locality in localities:
-            db.increment_locality_notice_count(locality)
-        for a, b in itertools.combinations(localities, 2):
-            db.increment_cooccurrence(a, b, seen_at=now)
-
+        process_notice(n, now)
         if verbose:
             print(f"  upserted: {n['title']}")
     if verbose:

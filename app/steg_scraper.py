@@ -46,6 +46,8 @@ TITLE_RE = re.compile(
     r"إشعار بانقطاع الكهرباء\s*-\s*(?P<region>.+?)\s*-\s*(?P<time>\d{1,2}:\d{2})\s+(?P<date>\d{2}/\d{2}/\d{4})"
 )
 
+SUBREGION_HEADER_RE = re.compile(r"^(?:جهة|ولاية)\s+\S")
+
 
 class FetchError(RuntimeError):
     """Raised when a URL can't be fetched after all retries are exhausted."""
@@ -105,13 +107,15 @@ def _extract_zones(body) -> tuple:
     table = body.select_one("table")
     if table:
         for cell in table.select("td"):
-            header_el = cell.select_one("strong, b")
-            header = header_el.get_text(strip=True) if header_el else None
             lines = [
                 _clean_zone_line(line)
                 for line in cell.get_text("\n", strip=True).split("\n")
             ]
-            lines = [l for l in lines if l and l != header]
+            lines = [l for l in lines if l]
+            header = None
+            if lines and SUBREGION_HEADER_RE.match(lines[0]):
+                header = lines[0]
+                lines = lines[1:]
             if header or lines:
                 subregions.append({"name": header, "zones": lines})
         flat = [z for sub in subregions for z in sub["zones"]]
@@ -122,11 +126,22 @@ def _extract_zones(body) -> tuple:
     return zones, subregions
 
 
+def _page_title(soup) -> str:
+    """The node's own title, as rendered in <title>. Drupal 7 (confirmed
+    live against this site) renders content pages as
+    "{node title} | {site name}" -- split off the site-name suffix."""
+    tag = soup.select_one("title")
+    if not tag:
+        return ""
+    return tag.get_text(strip=True).split(" | ")[0].strip()
+
+
 def parse_notice_detail(url: str) -> dict:
     soup = fetch(url)
+    title = _page_title(soup)
     body = soup.select_one(".field-name-body .field-item")
     if not body:
-        return {"raw_text": None, "zones": [], "subregions": [], "time_window_sentence": None}
+        return {"title": title, "raw_text": None, "zones": [], "subregions": [], "time_window_sentence": None}
 
     zones, subregions = _extract_zones(body)
     raw_text = body.get_text("\n", strip=True)
@@ -137,6 +152,7 @@ def parse_notice_detail(url: str) -> dict:
         time_window_sentence = m.group(1).strip()
 
     return {
+        "title": title,
         "raw_text": raw_text,
         "zones": zones,
         "subregions": subregions,

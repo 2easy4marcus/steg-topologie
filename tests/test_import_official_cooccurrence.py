@@ -82,3 +82,18 @@ def test_run_collapses_duplicate_locality_in_same_notice(monkeypatch):
     assert rows[("Dekka", "Tozeur")] == 1
     assert len(rows) == 1
     assert db.get_locality_notice_counts()["Dekka"] == 1
+
+
+def test_process_notice_upserts_and_records_cooccurrence():
+    notice = {
+        "id": "pn1", "title": "t", "url": "http://x", "region": "جهة الشمال",
+        "notice_date": "23/07/2026", "notice_time": "18:00",
+        "time_window_sentence": "s", "zones": ["Dekka", "Tozeur"],
+        "subregions": [], "raw_text": "raw",
+    }
+    import_official.process_notice(notice, "2026-07-23T18:00:00+00:00")
+
+    rows = {(r["locality_a"], r["locality_b"]): r["notice_count"] for r in db.list_cooccurrences()}
+    assert rows[("Dekka", "Tozeur")] == 1
+    assert db.count_official_notices() == 1
+    assert notice["scraped_at"] == "2026-07-23T18:00:00+00:00"

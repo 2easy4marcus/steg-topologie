@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import backfill_official
 from . import cluster_inference
 from . import db
 from . import import_official
@@ -61,6 +62,11 @@ def verify_cron_secret(x_cron_secret: str = Header(None)):
 
 
 class ScrapeResult(BaseModel):
+    notices_processed: int
+    total_in_db: int
+
+
+class BackfillResult(BaseModel):
     notices_processed: int
     total_in_db: int
 
@@ -179,6 +185,17 @@ def internal_scrape():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scrape job failed: {e}")
     return ScrapeResult(notices_processed=count, total_in_db=db.count_official_notices())
+
+
+@app.post("/api/internal/backfill", response_model=BackfillResult, dependencies=[Depends(verify_cron_secret)])
+def internal_backfill():
+    try:
+        count = backfill_official.crawl_archive(verbose=False)
+    except backfill_official.steg_scraper.FetchError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backfill job failed: {e}")
+    return BackfillResult(notices_processed=count, total_in_db=db.count_official_notices())
 
 
 @app.post("/api/internal/recluster", response_model=RecheckResult, dependencies=[Depends(verify_cron_secret)])

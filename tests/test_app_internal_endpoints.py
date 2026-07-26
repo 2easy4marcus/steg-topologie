@@ -64,3 +64,17 @@ def test_get_clusters_returns_points_when_data_exists(monkeypatch):
     assert body["data"][0]["locality"] == "Dekka"
     assert body["data"][0]["lat"] == 34.1
     assert body["data"][0]["stability"] == 0.8
+
+
+def test_internal_backfill_requires_secret(monkeypatch):
+    client, app_module = _client(monkeypatch)
+    resp = client.post("/api/internal/backfill")
+    assert resp.status_code == 401
+
+
+def test_internal_backfill_succeeds_with_correct_secret(monkeypatch):
+    client, app_module = _client(monkeypatch)
+    monkeypatch.setattr(app_module.backfill_official, "crawl_archive", lambda verbose=True: 5)
+    resp = client.post("/api/internal/backfill", headers={"X-Cron-Secret": "test-secret"})
+    assert resp.status_code == 200
+    assert resp.json()["notices_processed"] == 5
