@@ -36,10 +36,17 @@ def test_archive_page_links_ignores_pager_and_index_links(monkeypatch):
 
 
 def test_crawl_archive_imports_new_notices_then_stops(monkeypatch):
+    # Regression test for a real production bug: the crawl must NOT give up
+    # just because one page's only new link turns out to be a non-outage
+    # notice (page 1, below). It should keep going -- the only thing that
+    # should stop it is a page with truly zero unseen links (page 2). Page 3
+    # has a genuinely new, real notice that must NEVER be reached, proving
+    # the crawl stopped at page 2 rather than running unbounded.
     pages = {
         0: ["/fr/news/notice-a", "/fr/news/notice-b"],
-        1: ["/fr/news/notice-b", "/fr/news/notice-c"],  # b repeats, c is new
-        2: ["/fr/news/notice-b", "/fr/news/notice-c"],  # nothing new -> never fetched
+        1: ["/fr/news/notice-b", "/fr/news/notice-c"],  # b repeats, c is new but not an outage notice
+        2: ["/fr/news/notice-b", "/fr/news/notice-c"],  # both already seen -> zero unseen links, stop here
+        3: ["/fr/news/notice-d"],  # would be a real, importable notice -- must never be reached
     }
     fetch_calls = []
 
@@ -55,6 +62,8 @@ def test_crawl_archive_imports_new_notices_then_stops(monkeypatch):
             "إشعار بانقطاع الكهرباء - جهة الوسط - 11:00 21/07/2026", ["Kebili"]),
         "https://www.steg.com.tn/fr/news/notice-c": _fake_detail(
             "Some unrelated recruitment notice", ["Ignored"]),
+        "https://www.steg.com.tn/fr/news/notice-d": _fake_detail(
+            "إشعار بانقطاع الكهرباء - جهة الجنوب - 11:00 22/07/2026", ["Gabes"]),
     }
 
     monkeypatch.setattr(steg_scraper, "fetch", fake_fetch)
@@ -66,7 +75,9 @@ def test_crawl_archive_imports_new_notices_then_stops(monkeypatch):
     assert db.official_notice_exists("notice-a") is True
     assert db.official_notice_exists("notice-b") is True
     assert db.official_notice_exists("notice-c") is False  # no marker in title -> skipped
-    assert f"{backfill_official.ARCHIVE_URL}?page=2" not in fetch_calls
+    assert db.official_notice_exists("notice-d") is False  # never reached -- crawl stopped at page 2
+    assert f"{backfill_official.ARCHIVE_URL}?page=2" in fetch_calls  # must check: does page 2 have anything unseen?
+    assert f"{backfill_official.ARCHIVE_URL}?page=3" not in fetch_calls  # zero unseen links on page 2 -> stop
 
 
 def test_crawl_archive_respects_max_pages_safety_cap(monkeypatch):

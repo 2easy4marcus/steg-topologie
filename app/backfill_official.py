@@ -5,9 +5,12 @@ STEG's own site keeps a paginated archive of past news items at
 /fr/news, /fr/news?page=1, /fr/news?page=2, ... (confirmed live: page=1
 onward is full of historical outage notices, several per day). This module
 crawls that archive, going back further with each page, until a full page
-turns up nothing new (everything on it is already known to this crawl or
-already in the DB) -- making repeated runs cheap and safe. Hard-capped at
-max_pages regardless, so a future site change can't cause a runaway crawl.
+has zero unseen links (everything on it is already known to this crawl or
+already in the DB) -- making repeated runs cheap and safe. A page whose new
+links turn out to be non-outage notices (e.g. recruitment/tender news mixed
+into the archive) does NOT stop the crawl by itself -- only "nothing left
+unseen" does. Hard-capped at max_pages regardless, so a future site change
+can't cause a runaway crawl.
 
 Run manually (NOT on a schedule) via:
     python3 -m app.backfill_official
@@ -123,15 +126,20 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True, on_p
         if on_progress is not None:
             on_progress(page, len(new_links), imported)
 
-        # If this page's new links turned out to be entirely non-outage
-        # notices (e.g. recruitment/tender news, which the archive mixes in
-        # with outage notices), treat it the same as "nothing new" and stop
-        # -- otherwise a page full of unrelated news would let the crawl
-        # walk on forever without ever finding another real notice.
-        if imported == imported_before:
-            if verbose:
-                print(f"  page {page}: no outage notices among new links, stopping.")
-            break
+        # NOTE: we deliberately do NOT stop just because this page's new
+        # links turned out to be entirely non-outage notices (e.g. a
+        # recruitment/tender item mixed into the archive). A single stray
+        # non-outage link among mostly-already-known content does not mean
+        # deeper, never-crawled pages are empty too -- an earlier version of
+        # this function stopped on exactly that condition and, in
+        # production, halted the entire backfill at page 0 (which is mostly
+        # re-covering already-scraped ground) without ever reaching page 1+,
+        # where the real historical notices live. The only sound "we've
+        # caught up" signal is a page with zero *unseen* links at all (the
+        # `if not new_links: break` check above) -- max_pages remains the
+        # hard backstop against a genuinely pathological run of pure noise.
+        if imported_before == imported and verbose:
+            print(f"  page {page}: no outage notices among new links, continuing.")
 
         time.sleep(PAGE_DELAY_SECONDS)
 
