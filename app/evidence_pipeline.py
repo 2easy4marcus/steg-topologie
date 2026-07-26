@@ -149,7 +149,7 @@ def activate_cluster_run(run_id: str) -> None:
     db.activate_completed_cluster_run(run_id)
 
 
-def build_model_evidence(*, created_at: str) -> str:
+def build_model_evidence(*, created_at: str, activate: bool = True) -> str:
     """Create, validate, and atomically activate one immutable build."""
     build_id = uuid4().hex
     db.create_model_build(build_id, created_at)
@@ -163,5 +163,6 @@ def build_model_evidence(*, created_at: str) -> str:
         locality_count,
         pair_count,
     )
-    db.activate_completed_model_build(build_id)
+    if activate:
+        db.activate_completed_model_build(build_id)
     return build_id

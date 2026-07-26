@@ -78,3 +78,47 @@ That's it — the workflow will now run automatically: hourly it hits `/api/inte
 ## Ongoing costs
 
 Everything above is free at this project's scale: Render's free web service tier, Turso's free tier (5GB storage, 500M reads/10M writes per month), and GitHub Actions' free minutes for public repos. If the repo is private, GitHub Actions free minutes are limited per month but hourly + daily cron here uses very little of that allowance.
+# Evidence pipeline rollout
+
+The evidence migration is dry-run-first. Use this production order:
+
+1. Deploy the schema and application code.
+2. Verify `GET /api/status`.
+3. Complete the historical backfill and verify `GET /api/status/ingestion`.
+4. Preview parser and normalizer migrations:
+
+   ```bash
+   python -m app.reparse_snapshots
+   ```
+
+5. Apply the reparse:
+
+   ```bash
+   python -m app.reparse_snapshots --apply
+   ```
+
+6. Preview the evidence rebuild:
+
+   ```bash
+   python -m app.rebuild_evidence
+   ```
+
+7. Apply and activate the validated build:
+
+   ```bash
+   python -m app.rebuild_evidence --apply
+   ```
+
+8. Inspect `GET /api/model-readiness`.
+9. Trigger reclustering only when model quality and operational health pass.
+10. Inspect representative edges through `GET /api/edge-evidence`.
+
+An explicit notice rollback also defaults to a preview:
+
+```bash
+python -m app.rollback_notice NOTICE_ID PARSE_ID --reason "reason"
+python -m app.rollback_notice NOTICE_ID PARSE_ID --reason "reason" --apply
+```
+
+Reparse, rebuild, and rollback failures preserve the previously active parse,
+evidence build, and cluster run.

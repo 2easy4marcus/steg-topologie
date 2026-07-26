@@ -250,6 +250,16 @@ SCHEMA_STATEMENTS = [
         internal_error_detail TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS notice_rollbacks (
+        id TEXT PRIMARY KEY,
+        notice_id TEXT NOT NULL,
+        from_parse_id TEXT,
+        to_parse_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        rolled_back_at TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_notice ON notice_fetch_attempts(notice_id)",
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_time ON notice_fetch_attempts(fetched_at)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_notice ON notice_snapshots(notice_id)",
@@ -1021,6 +1031,120 @@ def stale_active_parse_count() -> int:
               AND np.snapshot_id <> ns.latest_snapshot_id
             """
         ).fetchone()["c"]
+
+
+def snapshots_missing_current_parse(
+    parser_version: str, normalization_version: str
+):
+    with get_conn() as conn:
+        states = conn.execute(
+            """
+            SELECT ns.notice_id, ns.latest_snapshot_id, ns.active_parse_id,
+                   snap.source_url, snap.raw_html,
+                   source.title, source.notice_date_raw,
+                   source.notice_date_iso, source.parse_status,
+                   source.parse_warnings
+            FROM notice_state ns
+            JOIN notice_snapshots snap
+              ON snap.snapshot_id = ns.latest_snapshot_id
+            LEFT JOIN notice_parses current
+              ON current.snapshot_id = ns.latest_snapshot_id
+             AND current.parser_version = ?
+             AND current.normalization_version = ?
+            LEFT JOIN notice_parses source
+              ON source.parse_id = COALESCE(
+                  (
+                    SELECT p.parse_id FROM notice_parses p
+                    WHERE p.snapshot_id = ns.latest_snapshot_id
+                    ORDER BY p.parsed_at DESC, p.parse_id DESC LIMIT 1
+                  ),
+                  ns.active_parse_id
+              )
+            WHERE current.parse_id IS NULL AND source.parse_id IS NOT NULL
+            """,
+            [parser_version, normalization_version],
+        ).fetchall()
+        out = []
+        for state in states:
+            localities = conn.execute(
+                """
+                SELECT nl.* FROM notice_localities nl
+                JOIN notice_parses np ON np.parse_id = nl.parse_id
+                WHERE np.parse_id = COALESCE(
+                    (
+                        SELECT p.parse_id FROM notice_parses p
+                        WHERE p.snapshot_id = ?
+                        ORDER BY p.parsed_at DESC, p.parse_id DESC LIMIT 1
+                    ),
+                    ?
+                )
+                ORDER BY nl.ordinal
+                """,
+                [state["latest_snapshot_id"], state["active_parse_id"]],
+            ).fetchall()
+            out.append({**state, "localities": localities})
+        return out
+
+
+def rollback_notice_parse(
+    notice_id: str,
+    parse_id: str,
+    reason: str,
+    rolled_back_at: str,
+    rollback_id: str,
+) -> None:
+    with get_transaction() as tx:
+        parse = tx.execute(
+            """
+            SELECT parse_id, notice_id, parse_status
+            FROM notice_parses WHERE parse_id = ?
+            """,
+            [parse_id],
+        ).fetchone()
+        if parse is None or parse["notice_id"] != notice_id:
+            raise ValueError("parse does not belong to notice")
+        if parse["parse_status"] == "failed":
+            raise ValueError("failed parse is not eligible for rollback")
+        state = tx.execute(
+            "SELECT active_parse_id FROM notice_state WHERE notice_id = ?",
+            [notice_id],
+        ).fetchone()
+        if state is None:
+            raise ValueError("notice state not found")
+        tx.execute(
+            """
+            UPDATE notice_state SET active_parse_id = ?, updated_at = ?
+            WHERE notice_id = ?
+            """,
+            [parse_id, rolled_back_at, notice_id],
+        )
+        tx.execute(
+            """
+            INSERT INTO notice_rollbacks(
+                id, notice_id, from_parse_id, to_parse_id, reason,
+                rolled_back_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                rollback_id,
+                notice_id,
+                state["active_parse_id"],
+                parse_id,
+                reason,
+                rolled_back_at,
+            ],
+        )
+
+
+def latest_notice_rollback(notice_id: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM notice_rollbacks WHERE notice_id = ?
+            ORDER BY rolled_back_at DESC, id DESC LIMIT 1
+            """,
+            [notice_id],
+        ).fetchone()
 
 
 # ---------- job locks ----------
