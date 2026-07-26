@@ -2,6 +2,7 @@
 
 import hashlib
 from datetime import datetime
+from uuid import uuid4
 
 from . import db, locality_dedup, steg_scraper
 from .evidence_models import (
@@ -94,3 +95,21 @@ def activate_model_build(build_id: str) -> None:
 
 def activate_cluster_run(run_id: str) -> None:
     db.activate_completed_cluster_run(run_id)
+
+
+def build_model_evidence(*, created_at: str) -> str:
+    """Create, validate, and atomically activate one immutable build."""
+    build_id = uuid4().hex
+    db.create_model_build(build_id, created_at)
+    db.populate_model_build(build_id)
+    db.validate_model_build(build_id)
+    notice_count, locality_count, pair_count = db.model_build_counts(build_id)
+    db.complete_model_build(
+        build_id,
+        created_at,
+        notice_count,
+        locality_count,
+        pair_count,
+    )
+    db.activate_completed_model_build(build_id)
+    return build_id

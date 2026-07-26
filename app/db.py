@@ -534,6 +534,119 @@ def active_cluster_run_id():
         return row["active_cluster_run_id"] if row else None
 
 
+def populate_model_build(build_id: str) -> None:
+    """Populate one inactive build from last-known-valid active parses."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO build_locality_counts(
+                build_id, locality, notice_count
+            )
+            SELECT ?, canonical_name, COUNT(DISTINCT notice_id)
+            FROM (
+                SELECT DISTINCT ns.notice_id, nl.canonical_name
+                FROM notice_state ns
+                JOIN notice_localities nl
+                  ON nl.parse_id = ns.active_parse_id
+            )
+            GROUP BY canonical_name
+            """,
+            [build_id],
+        )
+        conn.execute(
+            """
+            INSERT INTO build_cooccurrences(
+                build_id, locality_a, locality_b, notice_count,
+                distinct_date_count, first_observed_on, last_observed_on
+            )
+            WITH notice_names AS (
+                SELECT DISTINCT ns.notice_id, nl.canonical_name,
+                       np.notice_date_iso
+                FROM notice_state ns
+                JOIN notice_parses np ON np.parse_id = ns.active_parse_id
+                JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
+            ),
+            observations AS (
+                SELECT a.notice_id, a.canonical_name AS locality_a,
+                       b.canonical_name AS locality_b,
+                       a.notice_date_iso
+                FROM notice_names a
+                JOIN notice_names b
+                  ON b.notice_id = a.notice_id
+                 AND a.canonical_name < b.canonical_name
+            )
+            SELECT ?, locality_a, locality_b, COUNT(DISTINCT notice_id),
+                   COUNT(DISTINCT notice_date_iso),
+                   MIN(notice_date_iso), MAX(notice_date_iso)
+            FROM observations
+            GROUP BY locality_a, locality_b
+            """,
+            [build_id],
+        )
+
+
+def model_build_counts(build_id: str):
+    with get_conn() as conn:
+        notice_count = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ns.notice_id) AS c
+            FROM notice_state ns
+            JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
+            """,
+        ).fetchone()["c"]
+        locality_count = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM build_locality_counts
+            WHERE build_id = ?
+            """,
+            [build_id],
+        ).fetchone()["c"]
+        pair_count = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM build_cooccurrences
+            WHERE build_id = ?
+            """,
+            [build_id],
+        ).fetchone()["c"]
+        return notice_count, locality_count, pair_count
+
+
+def validate_model_build(build_id: str) -> None:
+    with get_conn() as conn:
+        invalid = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM build_cooccurrences
+            WHERE build_id = ? AND locality_a >= locality_b
+            """,
+            [build_id],
+        ).fetchone()["c"]
+        if invalid:
+            raise ValueError("model build contains invalid edge ordering")
+
+
+def build_locality_counts(build_id: str) -> dict:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT locality, notice_count FROM build_locality_counts
+            WHERE build_id = ? ORDER BY locality
+            """,
+            [build_id],
+        ).fetchall()
+        return {row["locality"]: row["notice_count"] for row in rows}
+
+
+def build_cooccurrences(build_id: str) -> list:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM build_cooccurrences
+            WHERE build_id = ? ORDER BY locality_a, locality_b
+            """,
+            [build_id],
+        ).fetchall()
+
+
 # ---------- job locks ----------
 
 def acquire_lock(
