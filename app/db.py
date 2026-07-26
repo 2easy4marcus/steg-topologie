@@ -325,12 +325,35 @@ class _Transaction(_Conn):
         self._client.close()
 
 
-@contextmanager
-def get_conn():
-    kwargs = {"url": DB_URL}
+def client_url(url: str) -> str:
+    """Normalize a database URL to a scheme that supports everything we need.
+
+    libsql_client's HTTP transport cannot do transactions at all -- it raises
+    TRANSACTIONS_NOT_SUPPORTED -- while its WebSocket transport can. Turso
+    serves the same database over both, but its dashboard hands out an
+    https:// URL, so a deployment configured the obvious way breaks the
+    moment any code path opens a transaction (this happened in production:
+    every evidence-pipeline notice import failed). Mapping http(s) to ws(s)
+    here means the scheme in the env var can't silently disable
+    transactions. file:, libsql:, ws: and wss: URLs pass through unchanged.
+    """
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://"):]
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://"):]
+    return url
+
+
+def _client_kwargs() -> dict:
+    kwargs = {"url": client_url(DB_URL)}
     if AUTH_TOKEN:
         kwargs["auth_token"] = AUTH_TOKEN
-    client = libsql_client.create_client_sync(**kwargs)
+    return kwargs
+
+
+@contextmanager
+def get_conn():
+    client = libsql_client.create_client_sync(**_client_kwargs())
     try:
         yield _Conn(client)
     finally:
@@ -339,10 +362,7 @@ def get_conn():
 
 @contextmanager
 def get_transaction():
-    kwargs = {"url": DB_URL}
-    if AUTH_TOKEN:
-        kwargs["auth_token"] = AUTH_TOKEN
-    client = libsql_client.create_client_sync(**kwargs)
+    client = libsql_client.create_client_sync(**_client_kwargs())
     transaction = _Transaction(client.transaction())
     try:
         yield transaction
