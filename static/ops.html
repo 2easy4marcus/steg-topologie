@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>État du pipeline — Tunisia Outage Tracker</title>
+<style>
+  :root {
+    --bg:#f4f6fb; --surface:#fff; --soft:#f8f9fc; --border:#e6eaf2;
+    --text:#1a1f36; --dim:#5a6376; --muted:#8992a3; --primary:#5d87ff;
+    --ok:#087f6d; --ok-soft:#e3fbf7; --warn:#9a6500; --warn-soft:#fef4e1;
+    --danger:#b5472e; --danger-soft:#fdece6; --radius:18px;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:0 24px 60px; background:var(--bg); color:var(--text);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  }
+  nav { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:16px 0; }
+  .brand { font-weight:800; }
+  .nav-links { display:flex; gap:4px; padding:4px; border:1px solid var(--border); border-radius:999px; background:var(--surface); }
+  .nav-links a { padding:9px 16px; border-radius:999px; color:var(--dim); text-decoration:none; font-size:.85rem; font-weight:700; }
+  .nav-links a:hover, .nav-links a:focus-visible { background:var(--soft); color:var(--text); }
+  .nav-links a.active { background:var(--primary); color:#fff; }
+  header { padding:24px 0; }
+  h1 { margin:0 0 8px; font-size:1.6rem; }
+  header p, footer { color:var(--dim); line-height:1.55; }
+  .status-line { min-height:24px; color:var(--dim); font-size:.85rem; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; box-shadow:0 2px 14px rgba(30,41,59,.06); }
+  .card h2 { margin:0 0 14px; font-size:1rem; }
+  .state { display:inline-block; padding:5px 10px; border-radius:999px; background:var(--soft); color:var(--dim); font-size:.75rem; font-weight:800; }
+  .state.ok, .state.completed { background:var(--ok-soft); color:var(--ok); }
+  .state.running { background:var(--warn-soft); color:var(--warn); }
+  .state.failed, .state.stale { background:var(--danger-soft); color:var(--danger); }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:8px 12px; margin:16px 0 0; font-size:.82rem; }
+  dt { color:var(--muted); }
+  dd { margin:0; text-align:right; overflow-wrap:anywhere; }
+  .request-id { font-family:ui-monospace,SFMono-Regular,monospace; user-select:all; }
+  footer { margin-top:28px; font-size:.78rem; }
+  :focus-visible { outline:3px solid #173f9f; outline-offset:3px; }
+  @media (max-width:640px) {
+    body { padding-inline:14px; }
+    nav { align-items:stretch; }
+    .nav-links { overflow-x:auto; }
+    .nav-links a { white-space:nowrap; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
+  }
+</style>
+</head>
+<body>
+  <nav aria-label="Navigation principale">
+    <div class="brand">Tunisia Outage Tracker</div>
+    <div class="nav-links">
+      <a href="/">Tracker</a>
+      <a href="/model.html">Modèle</a>
+      <a href="/ops.html" class="active" aria-current="page">Pipeline</a>
+    </div>
+  </nav>
+
+  <main>
+    <header>
+      <h1>État public du pipeline</h1>
+      <p>Progression et santé technique, sans journaux détaillés ni données sensibles.</p>
+    </header>
+    <div id="announcer" class="status-line" aria-live="polite" data-state="loading">Chargement de l’état…</div>
+    <div class="grid">
+      <article class="card" data-status-card><h2>Dernière collecte</h2><div id="scrape"></div></article>
+      <article class="card" data-status-card><h2>Backfill en cours</h2><div id="backfill"></div></article>
+      <article class="card" data-status-card><h2>Build de preuves actif</h2><div id="build"></div></article>
+      <article class="card" data-status-card><h2>Dernier clustering</h2><div id="cluster"></div></article>
+      <article class="card" data-status-card><h2>Préparation du modèle</h2><div id="readiness"></div></article>
+      <article class="card" data-status-card><h2>Santé opérationnelle</h2><div id="health"></div></article>
+    </div>
+  </main>
+  <footer>Les identifiants de requête peuvent être copiés pour retrouver une exécution dans les journaux Render.</footer>
+
+<script>
+const RUNNING_POLL_MS = 5000;
+const IDLE_POLL_MS = 60000;
+let pollTimer;
+
+function text(value, fallback = "—") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function jobMarkup(job) {
+  if (!job) return '<span class="state">Aucune exécution</span>';
+  const status = text(job.status, "inconnu");
+  return `
+    <span class="state ${status}">${status}</span>
+    <dl>
+      <dt>Début</dt><dd dir="auto">${text(job.started_at)}</dd>
+      <dt>Fin</dt><dd dir="auto">${text(job.finished_at)}</dd>
+      <dt>Pages</dt><dd>${text(job.pages_scanned, "0")}</dd>
+      <dt>Importés</dt><dd>${text(job.notices_imported, "0")}</dd>
+      <dt>Requête</dt><dd class="request-id" dir="auto">${text(job.request_id)}</dd>
+      <dt>Erreur sûre</dt><dd dir="auto">${text(job.public_error_code)}</dd>
+    </dl>`;
+}
+
+function simpleCard(id, state, rows) {
+  const target = document.getElementById(id);
+  target.replaceChildren();
+  const badge = document.createElement("span");
+  badge.className = `state ${state}`;
+  badge.textContent = state;
+  target.append(badge);
+  const list = document.createElement("dl");
+  rows.forEach(([label, value]) => {
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dt.textContent = label;
+    dd.textContent = text(value);
+    dd.dir = "auto";
+    list.append(dt, dd);
+  });
+  target.append(list);
+}
+
+async function refresh() {
+  const announcer = document.getElementById("announcer");
+  try {
+    const [statusResponse, ingestionResponse] = await Promise.all([
+      fetch("/api/status"),
+      fetch("/api/status/ingestion")
+    ]);
+    if (!statusResponse.ok || !ingestionResponse.ok) throw new Error("failed");
+    const status = await statusResponse.json();
+    const ingestion = await ingestionResponse.json();
+    document.getElementById("scrape").innerHTML = jobMarkup(ingestion.scrape);
+    document.getElementById("backfill").innerHTML = jobMarkup(ingestion.backfill);
+
+    const stale = Number(status.stale_active_parse_count || 0) > 0;
+    simpleCard("build", status.active_build_id ? (stale ? "stale" : "ok") : "indisponible", [
+      ["Build", status.active_build_id],
+      ["Parses obsolètes", status.stale_active_parse_count]
+    ]);
+    simpleCard("cluster", status.active_cluster_run_id ? "ok" : "indisponible", [
+      ["Cluster run", status.active_cluster_run_id]
+    ]);
+    simpleCard("readiness", status.active_build_id ? (stale ? "stale" : "ok") : "incomplète", [
+      ["Preuves actives", status.active_build_id ? "oui" : "non"],
+      ["Analyse détaillée", "voir la page Modèle"]
+    ]);
+    const running = [ingestion.scrape, ingestion.backfill].some(job => job?.status === "running");
+    const failed = [ingestion.scrape, ingestion.backfill].some(job => job?.status === "failed");
+    simpleCard("health", failed ? "failed" : (running ? "running" : text(status.status, "inconnu")), [
+      ["Actualisation", new Date().toLocaleString("fr-FR")],
+      ["Prochain contrôle", running ? "5 s" : "60 s"]
+    ]);
+    announcer.dataset.state = running ? "running" : "idle";
+    announcer.textContent = running ? "Une opération est en cours." : "État actualisé.";
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(refresh, running ? RUNNING_POLL_MS : IDLE_POLL_MS);
+  } catch (error) {
+    announcer.dataset.state = "failed";
+    announcer.textContent = "Impossible de charger l’état public. Nouvel essai dans 60 secondes.";
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(refresh, IDLE_POLL_MS);
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>
