@@ -45,4 +45,7 @@ def test_cooccurrences_returns_edges():
     db.increment_cooccurrence("Dekka", "Tozeur")
     resp = client.get("/api/cooccurrences")
     body = resp.json()
-    assert body["edges"] == [{"locality_a": "Dekka", "locality_b": "Tozeur", "notice_count": 2}]
+    edge = body["edges"][0]
+    assert edge["locality_a"] == "Dekka"
+    assert edge["locality_b"] == "Tozeur"
+    assert edge["notice_count"] == 2

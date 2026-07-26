@@ -173,6 +173,9 @@ class CooccurrenceEdge(BaseModel):
     locality_a: str
     locality_b: str
     notice_count: int
+    distinct_date_count: int = 0
+    first_observed_on: str | None = None
+    last_observed_on: str | None = None
 
 
 class CooccurrencesResponse(BaseModel):
@@ -244,6 +247,7 @@ def get_public_status():
         "status": "ok",
         "active_build_id": db.active_build_id(),
         "active_cluster_run_id": db.active_cluster_run_id(),
+        "stale_active_parse_count": db.stale_active_parse_count(),
     }
 
 
@@ -392,7 +396,14 @@ def get_model_status():
 @app.get("/api/cooccurrences", response_model=CooccurrencesResponse)
 def get_cooccurrences():
     edges = [
-        CooccurrenceEdge(locality_a=r["locality_a"], locality_b=r["locality_b"], notice_count=r["notice_count"])
+        CooccurrenceEdge(
+            locality_a=r["locality_a"],
+            locality_b=r["locality_b"],
+            notice_count=r["notice_count"],
+            distinct_date_count=r.get("distinct_date_count", 0),
+            first_observed_on=r.get("first_observed_on"),
+            last_observed_on=r.get("last_observed_on"),
+        )
         for r in db.list_cooccurrences()
     ]
     return CooccurrencesResponse(edges=edges)

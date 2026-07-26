@@ -1010,6 +1010,19 @@ def edge_evidence(
     }
 
 
+def stale_active_parse_count() -> int:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM notice_state ns
+            JOIN notice_parses np ON np.parse_id = ns.active_parse_id
+            WHERE ns.active_parse_id IS NOT NULL
+              AND np.snapshot_id <> ns.latest_snapshot_id
+            """
+        ).fetchone()["c"]
+
+
 # ---------- job locks ----------
 
 def acquire_lock(

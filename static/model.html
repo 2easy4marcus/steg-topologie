@@ -100,6 +100,36 @@
 
   .empty, .state-msg { color: var(--muted); font-size: 0.88rem; padding: var(--space-4) 0; }
   .state-msg.error { color: #e0553a; }
+  .readiness-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-3); }
+  .readiness-card, .metadata-card, .table-card, .evidence-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: var(--space-4); box-shadow: var(--shadow-card);
+  }
+  .signal-list { list-style: none; padding: 0; margin: var(--space-3) 0 0; display: grid; gap: 8px; }
+  .signal-row { display: flex; justify-content: space-between; gap: 12px; font-size: .82rem; }
+  .signal-state { font-weight: 700; }
+  .signal-state.pass { color: #087f6d; }
+  .signal-state.fail { color: #b5472e; }
+  .metadata-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-3); }
+  .metadata-item { color: var(--text-dim); font-size: .78rem; overflow-wrap: anywhere; }
+  .metadata-item strong { display: block; color: var(--text); margin-top: 4px; }
+  .edge-tools { display: flex; gap: var(--space-3); align-items: end; margin-bottom: var(--space-3); }
+  .edge-tools label { font-size: .8rem; font-weight: 600; color: var(--text-dim); flex: 1; }
+  .edge-tools input { width: 100%; min-height: 44px; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-dim); font-weight: 700; white-space: nowrap; }
+  button.evidence-action { min-height: 44px; padding: 8px 12px; border: 1px solid var(--primary); color: var(--primary-dark); background: var(--primary-soft); border-radius: var(--radius-sm); cursor: pointer; font-weight: 700; }
+  :focus-visible { outline: 3px solid #173f9f; outline-offset: 3px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+  @media (max-width: 720px) {
+    body { padding-inline: var(--space-3); }
+    #graph { height: 360px; }
+  }
 
   footer.app-footer {
     margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border);
@@ -136,10 +166,47 @@
     <div class="kpi-grid" id="kpi-grid"><div class="empty">Chargement…</div></div>
   </section>
 
+  <section>
+    <h2 class="section-title">Qualité et état opérationnel</h2>
+    <div id="model-readiness" class="readiness-grid" aria-live="polite"><div class="empty">Chargement…</div></div>
+  </section>
+
+  <section>
+    <h2 class="section-title">Version du modèle</h2>
+    <div id="model-metadata" class="metadata-card"><div class="empty">Chargement…</div></div>
+  </section>
+
   <section id="section-graph">
     <h2 class="section-title">Graphe de co-occurrence<span class="section-hint">nœuds = localités, arêtes = coupures groupées</span></h2>
-    <div class="graph-wrap"><svg id="graph"></svg></div>
+    <div class="graph-wrap"><svg id="graph" role="img" aria-label="Graphe expérimental des relations statistiques" aria-describedby="edge-table-description"></svg></div>
     <div class="graph-legend" id="graph-legend"></div>
+  </section>
+
+  <section id="section-edges">
+    <h2 class="section-title">Alternative textuelle du graphe</h2>
+    <p id="edge-table-description" class="state-msg">Chaque arête du graphe est également disponible dans ce tableau filtrable.</p>
+    <p>Inferred statistical relationship — not a confirmed transformer, feeder, or physical grid location.</p>
+    <div class="table-card">
+      <div class="edge-tools">
+        <label for="edge-filter">Filtrer les localités
+          <input id="edge-filter" type="search" autocomplete="off" placeholder="Nom d’une localité" aria-controls="edge-table">
+        </label>
+      </div>
+      <div class="table-scroll">
+        <table id="edge-table">
+          <thead><tr>
+            <th>Localité A</th><th>Localité B</th><th>Avis</th><th>Dates distinctes</th>
+            <th>Première observation</th><th>Dernière observation</th><th>Cluster</th><th>Preuves</th>
+          </tr></thead>
+          <tbody id="edge-table-body" dir="auto"><tr><td colspan="8">Chargement…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="evidence-panel" class="evidence-card" aria-live="polite" tabindex="-1">
+    <h2 class="section-title">Preuves de l’arête</h2>
+    <div id="evidence-content" class="empty">Sélectionnez une arête pour afficher ses avis STEG.</div>
   </section>
 
   <section id="section-clusters">
@@ -151,10 +218,13 @@
 
 <script>
 const API = "/api";
+const EDGE_EVIDENCE_ENDPOINT = "/api/edge-evidence";
 const CLUSTER_PALETTE = [
   "#5d87ff", "#13deb9", "#ffae1f", "#fa896b", "#a78bfa", "#2aa1ff",
   "#f6c945", "#ff8fc7", "#22c55e", "#818cf8", "#fb923c", "#38bdf8",
 ];
+let allPoints = [];
+let allEdges = [];
 
 function esc(s) {
   if (s === null || s === undefined) return "";
@@ -203,6 +273,88 @@ function renderKpis(status) {
     <div class="kpi-card"><div class="num">${status.days_of_history}</div><div class="label">Jours d'historique de clustering</div></div>
     <div class="kpi-card"><div class="num">${status.last_run_date || '—'}</div><div class="label">Dernier recalcul</div></div>
   `;
+}
+
+function renderReadiness(readiness) {
+  const sections = [
+    ["Qualité du modèle", readiness.model_quality],
+    ["Santé opérationnelle", readiness.operational_health],
+  ];
+  document.getElementById("model-readiness").innerHTML = sections.map(([title, section]) => `
+    <article class="readiness-card">
+      <strong>${title}</strong>
+      <div class="data-floor-badge ${section.ready ? 'met' : 'unmet'}">${section.ready ? '✓ Conforme' : '✕ Bloqué'}</div>
+      <ul class="signal-list">
+        ${section.signals.map(signal => `<li class="signal-row">
+          <span>${esc(signal.key)}</span>
+          <span class="signal-state ${signal.passed ? 'pass' : 'fail'}">${signal.passed ? '✓' : '✕'} ${signal.current ?? '—'} ${esc(signal.operator)} ${signal.required}</span>
+        </li>`).join("")}
+      </ul>
+    </article>`).join("");
+}
+
+function renderMetadata(clusters, pipelineStatus) {
+  const state = clusters.is_current ? "✓ Actuel" : "✕ Obsolète";
+  const staleNotice = pipelineStatus.stale_active_parse_count
+    ? `<div class="state-msg error">✕ ${pipelineStatus.stale_active_parse_count} avis utilisent encore une analyse valide plus ancienne car le contenu le plus récent n’a pas pu être analysé.</div>`
+    : "";
+  document.getElementById("model-metadata").innerHTML = `<div class="metadata-grid">
+    <div class="metadata-item">Evidence build<strong>${esc(clusters.active_build_id || '—')}</strong></div>
+    <div class="metadata-item">Cluster run<strong>${esc(clusters.cluster_run_id || '—')}</strong></div>
+    <div class="metadata-item">Algorithme<strong>${esc(clusters.algorithm_version || '—')}</strong></div>
+    <div class="metadata-item">État<strong>${state}</strong></div>
+  </div>${staleNotice}`;
+}
+
+function clusterForEdge(edge) {
+  const a = allPoints.find(p => p.locality === edge.locality_a);
+  const b = allPoints.find(p => p.locality === edge.locality_b);
+  return a && b && a.cluster_id === b.cluster_id ? `#${a.cluster_id}` : "—";
+}
+
+function renderEdgeTable(edges) {
+  const body = document.getElementById("edge-table-body");
+  if (!edges.length) {
+    body.innerHTML = `<tr><td colspan="8">Aucune arête correspondante.</td></tr>`;
+    return;
+  }
+  body.innerHTML = edges.map(edge => `<tr>
+    <td dir="auto">${esc(edge.locality_a)}</td>
+    <td dir="auto">${esc(edge.locality_b)}</td>
+    <td>${edge.notice_count}</td>
+    <td>${edge.distinct_date_count || 0}</td>
+    <td>${esc(edge.first_observed_on || '—')}</td>
+    <td>${esc(edge.last_observed_on || '—')}</td>
+    <td>${clusterForEdge(edge)}</td>
+    <td><button class="evidence-action" data-a="${esc(edge.locality_a)}" data-b="${esc(edge.locality_b)}" aria-label="Afficher les preuves pour ${esc(edge.locality_a)} et ${esc(edge.locality_b)}">Voir</button></td>
+  </tr>`).join("");
+}
+
+async function loadEdgeEvidence(localityA, localityB) {
+  const panel = document.getElementById("evidence-panel");
+  const content = document.getElementById("evidence-content");
+  content.textContent = "Chargement des preuves…";
+  panel.focus();
+  try {
+    const data = await fetchJson(`${EDGE_EVIDENCE_ENDPOINT}?locality_a=${encodeURIComponent(localityA)}&locality_b=${encodeURIComponent(localityB)}`);
+    content.innerHTML = `<p><strong dir="auto">${esc(data.locality_a)}</strong> ↔ <strong dir="auto">${esc(data.locality_b)}</strong></p>
+      <p>${data.distinct_notice_count} avis sur ${data.distinct_outage_dates} dates distinctes.</p>
+      <ul>${data.notices.map(n => `<li><a href="${esc(n.source_url)}" target="_blank" rel="noopener" aria-label="Ouvrir l’avis STEG ${esc(n.title)}"><span dir="auto">${esc(n.title)}</span></a> — ${esc(n.notice_date || 'date inconnue')}</li>`).join("")}</ul>
+      <p>Inferred statistical relationship — not a confirmed transformer, feeder, or physical grid location.</p>`;
+  } catch (error) {
+    content.innerHTML = `<div class="state-msg error">Impossible de charger les preuves. Réessayez.</div>`;
+  }
+}
+
+function applyEdgeFilter() {
+  const query = document.getElementById("edge-filter").value.trim().toLocaleLowerCase();
+  const filteredEdges = query
+    ? allEdges.filter(edge => edge.locality_a.toLocaleLowerCase().includes(query) || edge.locality_b.toLocaleLowerCase().includes(query))
+    : allEdges;
+  const visibleNames = new Set(filteredEdges.flatMap(edge => [edge.locality_a, edge.locality_b]));
+  const filteredPoints = query ? allPoints.filter(point => visibleNames.has(point.locality)) : allPoints;
+  renderEdgeTable(filteredEdges);
+  renderGraph(filteredPoints, filteredEdges);
 }
 
 function renderClusterList(points) {
@@ -282,7 +434,16 @@ function renderGraph(points, edges) {
     .join("line")
     .attr("stroke", "#dbe2ee")
     .attr("stroke-width", d => 1 + 3 * (d.weight / maxWeight))
-    .attr("stroke-opacity", 0.8);
+    .attr("stroke-opacity", 0.8)
+    .attr("tabindex", 0)
+    .attr("role", "button")
+    .attr("aria-label", d => `Afficher les preuves pour ${d.source.id || d.source} et ${d.target.id || d.target}`)
+    .on("click keydown", (event, d) => {
+      if (event.type === "click" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        loadEdgeEvidence(d.source.id || d.source, d.target.id || d.target);
+      }
+    });
 
   const node = g.append("g")
     .selectAll("circle")
@@ -338,12 +499,14 @@ function renderGraph(points, edges) {
 }
 
 (async function boot() {
-  let status, clusters, cooccurrences;
+  let status, readiness, clusters, cooccurrences, pipelineStatus;
   try {
-    [status, clusters, cooccurrences] = await Promise.all([
+    [status, readiness, clusters, cooccurrences, pipelineStatus] = await Promise.all([
       fetchJson(`${API}/model-status`),
+      fetchJson(`${API}/model-readiness`),
       fetchJson(`${API}/clusters`),
       fetchJson(`${API}/cooccurrences`),
+      fetchJson(`${API}/status`),
     ]);
   } catch (e) {
     document.getElementById("progress-content").innerHTML = `<div class="state-msg error">⚠️ Impossible de charger l'état du modèle.</div>`;
@@ -353,10 +516,20 @@ function renderGraph(points, edges) {
 
   renderProgress(status);
   renderKpis(status);
-  renderClusterList(clusters.data || []);
-  renderGraph(clusters.data || [], cooccurrences.edges || []);
+  renderReadiness(readiness);
+  renderMetadata(clusters, pipelineStatus);
+  allPoints = clusters.clusters || clusters.data || [];
+  allEdges = cooccurrences.edges || [];
+  renderClusterList(allPoints);
+  renderEdgeTable(allEdges);
+  renderGraph(allPoints, allEdges);
 
-  window.addEventListener("resize", () => renderGraph(clusters.data || [], cooccurrences.edges || []));
+  document.getElementById("edge-filter").addEventListener("input", applyEdgeFilter);
+  document.getElementById("edge-table-body").addEventListener("click", event => {
+    const button = event.target.closest("button.evidence-action");
+    if (button) loadEdgeEvidence(button.dataset.a, button.dataset.b);
+  });
+  window.addEventListener("resize", applyEdgeFilter);
 })();
 </script>
 </body>
