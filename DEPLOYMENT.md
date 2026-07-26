@@ -50,6 +50,9 @@ Keep both values somewhere safe for the next steps.
    - `TURSO_DATABASE_URL` = the URL from step 2
    - `TURSO_AUTH_TOKEN` = the token from step 2
    - `CRON_SECRET` = any random string you make up (e.g. run `openssl rand -hex 32` locally and paste the result) — this is the shared secret that authorizes the scrape/recluster endpoints, so it should be long and random, not something guessable.
+   - `OPS_SECRET` = a second, independently generated random string used only
+     by operators calling the protected diagnostics API. Never expose it in
+     frontend JavaScript and do not reuse `CRON_SECRET`.
 4. Deploy. Render will build and give you a URL like `https://tunisia-outage-tracker.onrender.com`.
 
 Note: Render's free tier sleeps the service after 15 minutes of no traffic and wakes it back up on the next request (a few seconds of delay). This is fine here — the DB lives in Turso, not on Render's disk, so nothing is lost between sleeps, and the hourly cron below will also naturally keep it from sleeping for too long at a time.
@@ -122,3 +125,13 @@ python -m app.rollback_notice NOTICE_ID PARSE_ID --reason "reason" --apply
 
 Reparse, rebuild, and rollback failures preserve the previously active parse,
 evidence build, and cluster run.
+
+## Operations diagnostics
+
+After deployment, verify the sanitized dashboard at `/ops.html`. Detailed job
+summaries and event timelines require `X-Ops-Secret` and are intended for
+Postman or curl, not the browser frontend.
+
+Follow [docs/OPERATIONS.md](docs/OPERATIONS.md) for safe environment setup,
+request-ID correlation with Render logs, error-code interpretation, secret
+rotation, retention, and the sensitive-response verification checklist.
