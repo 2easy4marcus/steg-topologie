@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -66,9 +66,15 @@ class ScrapeResult(BaseModel):
     total_in_db: int
 
 
-class BackfillResult(BaseModel):
-    notices_processed: int
+class BackfillStatus(BaseModel):
+    running: bool
+    page: int
+    new_links_this_page: int
+    imported: int
     total_in_db: int
+    started_at: str | None
+    finished_at: str | None
+    error: str | None
 
 
 class RecheckResult(BaseModel):
@@ -187,15 +193,17 @@ def internal_scrape():
     return ScrapeResult(notices_processed=count, total_in_db=db.count_official_notices())
 
 
-@app.post("/api/internal/backfill", response_model=BackfillResult, dependencies=[Depends(verify_cron_secret)])
-def internal_backfill():
-    try:
-        count = backfill_official.crawl_archive(verbose=False)
-    except backfill_official.steg_scraper.FetchError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Backfill job failed: {e}")
-    return BackfillResult(notices_processed=count, total_in_db=db.count_official_notices())
+@app.post("/api/internal/backfill", dependencies=[Depends(verify_cron_secret)])
+def internal_backfill(background_tasks: BackgroundTasks):
+    if backfill_official.get_status()["running"]:
+        return {"status": "already_running"}
+    background_tasks.add_task(backfill_official.run_backfill_and_track_status)
+    return {"status": "started"}
+
+
+@app.get("/api/internal/backfill/status", response_model=BackfillStatus)
+def internal_backfill_status():
+    return BackfillStatus(**backfill_official.get_status())
 
 
 @app.post("/api/internal/recluster", response_model=RecheckResult, dependencies=[Depends(verify_cron_secret)])

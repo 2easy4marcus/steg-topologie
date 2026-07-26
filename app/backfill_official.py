@@ -15,6 +15,7 @@ or against the deployed app:
     curl -X POST "$APP_URL/api/internal/backfill" -H "X-Cron-Secret: $CRON_SECRET"
 """
 
+import logging
 import re
 import sys
 import time
@@ -31,6 +32,19 @@ DEFAULT_MAX_PAGES = 100
 
 NEWS_HREF_RE = re.compile(r"^/fr/news/[^?]+$")
 
+logger = logging.getLogger(__name__)
+
+_status = {
+    "running": False,
+    "page": 0,
+    "new_links_this_page": 0,
+    "imported": 0,
+    "total_in_db": 0,
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+}
+
 
 def _archive_page_links(page: int) -> list:
     """Every distinct /fr/news/<slug> URL found on one archive listing page.
@@ -46,10 +60,16 @@ def _archive_page_links(page: int) -> list:
     return sorted(hrefs)
 
 
-def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True) -> int:
+def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True, on_progress=None) -> int:
     """Crawl the archive page by page, importing any outage notice not
     already known, until a page contributes nothing new or max_pages is
-    reached. Returns the number of newly-imported notices."""
+    reached. Returns the number of newly-imported notices.
+
+    If on_progress is given, it is called as on_progress(page, new_links_count,
+    imported_so_far) twice per page that has new links: once right after the
+    new links are found (before processing them), and once again after the
+    page's per-notice processing loop finishes. It is not called for a page
+    with no new links (the "nothing new, stopping" case)."""
     db.init_db()
     now = datetime.now(timezone.utc).isoformat()
     imported = 0
@@ -67,6 +87,12 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True) -> i
             if verbose:
                 print(f"  page {page}: nothing new, stopping.")
             break
+
+        if verbose:
+            print(f"  page {page}: {len(new_links)} new link(s), fetching details...")
+
+        if on_progress is not None:
+            on_progress(page, len(new_links), imported)
 
         imported_before = imported
         for url in new_links:
@@ -94,6 +120,9 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True) -> i
             if verbose:
                 print(f"  imported: {title}")
 
+        if on_progress is not None:
+            on_progress(page, len(new_links), imported)
+
         # If this page's new links turned out to be entirely non-outage
         # notices (e.g. recruitment/tender news, which the archive mixes in
         # with outage notices), treat it the same as "nothing new" and stop
@@ -109,6 +138,49 @@ def crawl_archive(max_pages: int = DEFAULT_MAX_PAGES, verbose: bool = True) -> i
     if verbose:
         print(f"Done. {imported} new notice(s) imported, {db.count_official_notices()} total in DB.")
     return imported
+
+
+def get_status() -> dict:
+    """A snapshot of the current/last backfill run's progress. Safe to call
+    at any time, including before any run has ever happened (all zero/None
+    defaults) or while a run is actively in progress."""
+    return dict(_status)
+
+
+def run_backfill_and_track_status(max_pages: int = DEFAULT_MAX_PAGES) -> None:
+    """Run crawl_archive() while updating the module-level _status dict as
+    it progresses, so a concurrent request (e.g. a status-polling endpoint)
+    can observe live progress. Meant to be scheduled as a background task by
+    the HTTP layer -- callers that want a return value or synchronous
+    behavior should call crawl_archive() directly instead."""
+    _status.update({
+        "running": True,
+        "page": 0,
+        "new_links_this_page": 0,
+        "imported": 0,
+        "error": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+    })
+
+    def _on_progress(page, new_links_count, imported_so_far):
+        _status["page"] = page
+        _status["new_links_this_page"] = new_links_count
+        _status["imported"] = imported_so_far
+
+    try:
+        crawl_archive(max_pages=max_pages, verbose=True, on_progress=_on_progress)
+    except Exception as e:
+        # This runs in a detached background task -- if we don't log here,
+        # an unexpected bug (as opposed to an expected FetchError) vanishes
+        # into an opaque string in _status["error"] with no server-side
+        # trace to debug it from.
+        logger.exception("Backfill run failed")
+        _status["error"] = str(e)
+    finally:
+        _status["running"] = False
+        _status["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _status["total_in_db"] = db.count_official_notices()
 
 
 if __name__ == "__main__":

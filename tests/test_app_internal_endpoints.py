@@ -74,7 +74,25 @@ def test_internal_backfill_requires_secret(monkeypatch):
 
 def test_internal_backfill_succeeds_with_correct_secret(monkeypatch):
     client, app_module = _client(monkeypatch)
-    monkeypatch.setattr(app_module.backfill_official, "crawl_archive", lambda verbose=True: 5)
+    monkeypatch.setattr(app_module.backfill_official, "run_backfill_and_track_status", lambda max_pages=100: None)
     resp = client.post("/api/internal/backfill", headers={"X-Cron-Secret": "test-secret"})
     assert resp.status_code == 200
-    assert resp.json()["notices_processed"] == 5
+    assert resp.json()["status"] == "started"
+
+
+def test_internal_backfill_returns_already_running_if_in_progress(monkeypatch):
+    client, app_module = _client(monkeypatch)
+    monkeypatch.setattr(app_module.backfill_official, "get_status", lambda: {"running": True})
+    resp = client.post("/api/internal/backfill", headers={"X-Cron-Secret": "test-secret"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "already_running"
+
+
+def test_internal_backfill_status_endpoint_returns_current_state(monkeypatch):
+    client, app_module = _client(monkeypatch)
+    resp = client.get("/api/internal/backfill/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "running" in body
+    assert "imported" in body
+    assert "page" in body
