@@ -43,6 +43,30 @@ from . import import_official
 from . import model_readiness
 from . import observability
 from .governorates import GOVERNORATE_NAMES, GOVERNORATES
+import hashlib
+
+def _secret_debug(value: str | None) -> dict:
+    value = value or ""
+    return {
+        "present": bool(value),
+        "length": len(value),
+        "fingerprint": hashlib.sha256(value.encode()).hexdigest()[:12],
+    }
+
+
+def verify_cron_secret(x_cron_secret: str = Header(None)):
+    if not CRON_SECRET or not hmac.compare_digest(
+        x_cron_secret or "", CRON_SECRET
+    ):
+        print(json.dumps({
+            "event": "cron_auth_failed",
+            "expected": _secret_debug(CRON_SECRET),
+            "received": _secret_debug(x_cron_secret),
+        }))
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing X-Cron-Secret",
+        )
 
 app = FastAPI(title="Tunisia Outage Tracker")
 
