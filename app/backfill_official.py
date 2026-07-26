@@ -164,8 +164,48 @@ def crawl_archive(
     on_progress=None,
 ) -> int:
     job_id, _ = observability.acquire_evidence_job_lock(ttl_minutes=30)
+    started_at = datetime.now(timezone.utc).isoformat()
+    db.start_ingestion_run(job_id, "backfill", started_at)
+    progress = {"last_page": -1, "links": 0}
+
+    def persist_progress(page, new_links_count, imported_so_far):
+        if page != progress["last_page"]:
+            progress["last_page"] = page
+            progress["links"] += new_links_count
+        db.update_ingestion_run(
+            job_id,
+            current_page=page,
+            pages_scanned=page + 1,
+            links_discovered=progress["links"],
+            notices_imported=imported_so_far,
+            last_progress_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if on_progress is not None:
+            on_progress(page, new_links_count, imported_so_far)
+
     try:
-        return _crawl_archive_unlocked(max_pages, verbose, on_progress)
+        imported = _crawl_archive_unlocked(
+            max_pages, verbose, persist_progress
+        )
+        db.finish_ingestion_run(
+            job_id,
+            "completed",
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return imported
+    except Exception as exc:
+        db.finish_ingestion_run(
+            job_id,
+            "failed",
+            datetime.now(timezone.utc).isoformat(),
+            public_error_code=(
+                "steg_http_error"
+                if isinstance(exc, steg_scraper.FetchError)
+                else "job_failed"
+            ),
+            internal_error_detail=str(exc),
+        )
+        raise
     finally:
         observability.release_job_lock("evidence-pipeline", job_id)
 

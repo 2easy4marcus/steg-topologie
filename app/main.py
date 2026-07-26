@@ -14,11 +14,23 @@ Then open http://127.0.0.1:8010 in a browser.
 """
 
 import hmac
+import json
 import os
+import re
+import time
 from datetime import datetime, timezone
 from typing import Literal, Optional
+from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -26,9 +38,40 @@ from . import backfill_official
 from . import cluster_inference
 from . import db
 from . import import_official
+from . import observability
 from .governorates import GOVERNORATE_NAMES, GOVERNORATES
 
 app = FastAPI(title="Tunisia Outage Tracker")
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+@app.middleware("http")
+async def request_metadata(request: Request, call_next):
+    supplied = request.headers.get("X-Request-ID", "")
+    request_id = supplied if _REQUEST_ID_RE.fullmatch(supplied) else uuid4().hex
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    route = request.scope.get("route")
+    route_template = getattr(route, "path", request.url.path)
+    print(
+        json.dumps(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "request_id": request_id,
+                "method": request.method,
+                "route": route_template,
+                "status": response.status_code,
+                "duration_ms": round(
+                    (time.perf_counter() - started) * 1000, 3
+                ),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return response
 
 
 @app.on_event("startup")
@@ -182,12 +225,37 @@ def get_stats():
     return {**overall, "by_governorate": by_gov}
 
 
+@app.get("/api/status")
+def get_public_status():
+    return {
+        "status": "ok",
+        "active_build_id": db.active_build_id(),
+        "active_cluster_run_id": db.active_cluster_run_id(),
+    }
+
+
+@app.get("/api/status/ingestion")
+def get_public_ingestion_status():
+    return {
+        "scrape": db.latest_ingestion_run("scrape"),
+        "backfill": db.latest_ingestion_run("backfill"),
+    }
+
+
 @app.post("/api/internal/scrape", response_model=ScrapeResult, dependencies=[Depends(verify_cron_secret)])
 def internal_scrape():
     try:
         count = import_official.run(verbose=False)
     except import_official.steg_scraper.FetchError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except observability.JobAlreadyRunning as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "job_already_running",
+                "owner_job_id": e.owner_job_id,
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scrape job failed: {e}")
     return ScrapeResult(notices_processed=count, total_in_db=db.count_official_notices())

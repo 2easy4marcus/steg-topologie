@@ -230,6 +230,26 @@ SCHEMA_STATEMENTS = [
         expires_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS ingestion_runs (
+        id TEXT PRIMARY KEY,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        current_page INTEGER,
+        pages_scanned INTEGER NOT NULL DEFAULT 0,
+        links_discovered INTEGER NOT NULL DEFAULT 0,
+        notices_imported INTEGER NOT NULL DEFAULT 0,
+        notices_unchanged INTEGER NOT NULL DEFAULT 0,
+        notices_skipped INTEGER NOT NULL DEFAULT 0,
+        notices_failed INTEGER NOT NULL DEFAULT 0,
+        last_progress_at TEXT,
+        request_id TEXT,
+        public_error_code TEXT,
+        internal_error_detail TEXT
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_notice ON notice_fetch_attempts(notice_id)",
     "CREATE INDEX IF NOT EXISTS idx_fetch_attempts_time ON notice_fetch_attempts(fetched_at)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_notice ON notice_snapshots(notice_id)",
@@ -808,6 +828,106 @@ def release_lock(lock_name: str, owner_job_id: str) -> bool:
             [lock_name, owner_job_id],
         )
         return result.rows_affected > 0
+
+
+# ---------- persistent ingestion status ----------
+
+_INGESTION_COUNTERS = {
+    "current_page",
+    "pages_scanned",
+    "links_discovered",
+    "notices_imported",
+    "notices_unchanged",
+    "notices_skipped",
+    "notices_failed",
+}
+
+
+def start_ingestion_run(
+    run_id: str,
+    job_type: str,
+    started_at: str,
+    *,
+    request_id: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ingestion_runs(
+                id, job_type, status, started_at, last_progress_at,
+                request_id
+            ) VALUES (?, ?, 'running', ?, ?, ?)
+            """,
+            [run_id, job_type, started_at, started_at, request_id],
+        )
+
+
+def update_ingestion_run(
+    run_id: str, *, last_progress_at: str | None = None, **values
+) -> None:
+    invalid = set(values) - _INGESTION_COUNTERS
+    if invalid:
+        raise ValueError(f"unsupported ingestion counters: {sorted(invalid)}")
+    if not values and last_progress_at is None:
+        return
+    assignments = [f"{name} = ?" for name in values]
+    params = list(values.values())
+    if last_progress_at is not None:
+        assignments.append("last_progress_at = ?")
+        params.append(last_progress_at)
+    params.append(run_id)
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE ingestion_runs SET {', '.join(assignments)} WHERE id = ?",
+            params,
+        )
+
+
+def finish_ingestion_run(
+    run_id: str,
+    status: str,
+    finished_at: str,
+    *,
+    public_error_code: str | None = None,
+    internal_error_detail: str | None = None,
+) -> None:
+    if status not in {"completed", "failed"}:
+        raise ValueError("invalid terminal ingestion status")
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE ingestion_runs
+            SET status = ?, finished_at = ?, last_progress_at = ?,
+                public_error_code = ?, internal_error_detail = ?
+            WHERE id = ?
+            """,
+            [
+                status,
+                finished_at,
+                finished_at,
+                public_error_code,
+                internal_error_detail,
+                run_id,
+            ],
+        )
+
+
+def latest_ingestion_run(job_type: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT id, job_type, status, started_at, finished_at,
+                   current_page, pages_scanned, links_discovered,
+                   notices_imported, notices_unchanged, notices_skipped,
+                   notices_failed, last_progress_at, request_id,
+                   public_error_code
+            FROM ingestion_runs
+            WHERE job_type = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+            """,
+            [job_type],
+        ).fetchone()
 
 
 # ---------- official notices ----------

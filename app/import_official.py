@@ -50,15 +50,30 @@ def rebuild_if_changed(changed: bool, now: str):
 def run(verbose: bool = True) -> int:
     db.init_db()
     job_id, _ = observability.acquire_evidence_job_lock(ttl_minutes=15)
+    started_at = datetime.now(timezone.utc).isoformat()
+    db.start_ingestion_run(job_id, "scrape", started_at)
     try:
         notices = steg_scraper.scrape_current_notices()
         now = datetime.now(timezone.utc).isoformat()
         changed = False
+        imported = 0
+        unchanged = 0
         for n in notices:
-            changed = process_notice(n, now) or changed
+            notice_changed = process_notice(n, now)
+            changed = notice_changed or changed
+            imported += int(notice_changed)
+            unchanged += int(not notice_changed)
             if verbose:
                 print(f"  upserted: {n['title']}")
         rebuild_if_changed(changed, now)
+        db.update_ingestion_run(
+            job_id,
+            links_discovered=len(notices),
+            notices_imported=imported,
+            notices_unchanged=unchanged,
+            last_progress_at=now,
+        )
+        db.finish_ingestion_run(job_id, "completed", now)
         if verbose:
             if not notices:
                 print("Done. 0 notice(s) currently on STEG's homepage "
@@ -66,6 +81,21 @@ def run(verbose: bool = True) -> int:
             print(f"Done. {len(notices)} notice(s) processed, "
                   f"{db.count_official_notices()} total in DB.")
         return len(notices)
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc).isoformat()
+        code = (
+            "steg_http_error"
+            if isinstance(exc, steg_scraper.FetchError)
+            else "job_failed"
+        )
+        db.finish_ingestion_run(
+            job_id,
+            "failed",
+            finished_at,
+            public_error_code=code,
+            internal_error_detail=str(exc),
+        )
+        raise
     finally:
         observability.release_job_lock("evidence-pipeline", job_id)
 
