@@ -326,6 +326,7 @@ class _Transaction(_Conn):
         self._client.close()
 
 
+<<<<<<< Updated upstream
 def client_url(url: str) -> str:
     """Normalize a database URL to a scheme that supports everything we need.
 
@@ -346,8 +347,16 @@ def client_url(url: str) -> str:
     return url
 
 
+=======
+>>>>>>> Stashed changes
 def _client_kwargs() -> dict:
-    kwargs = {"url": client_url(DB_URL)}
+    # NOTE: do NOT rewrite an https:// DB_URL to wss:// here. It looks like an
+    # easy way to get transaction support (libsql_client's HTTP transport
+    # raises TRANSACTIONS_NOT_SUPPORTED, its WebSocket transport doesn't), but
+    # this Turso host rejects the Hrana WebSocket handshake outright with
+    # "400 Invalid response status", which takes the whole app down at
+    # startup on the very first init_db() call. Use the URL as configured.
+    kwargs = {"url": DB_URL}
     if AUTH_TOKEN:
         kwargs["auth_token"] = AUTH_TOKEN
     return kwargs
