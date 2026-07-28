@@ -16,11 +16,11 @@ from app import db
 def test_client_url_maps_https_to_websocket():
     # The scheme Turso's dashboard hands out -- must not reach the client
     # as-is, or transactions are silently unavailable.
-    assert db.client_url("https://db-org.turso.io") == "wss://db-org.turso.io"
+    assert db.client_url("https://db-org.turso.io") == "libsql://db-org.turso.io"
 
 
 def test_client_url_maps_http_to_websocket():
-    assert db.client_url("http://127.0.0.1:8080") == "ws://127.0.0.1:8080"
+    assert db.client_url("http://127.0.0.1:8080") == "libsql://127.0.0.1:8080"
 
 
 def test_client_url_leaves_transaction_capable_schemes_untouched():
@@ -34,7 +34,7 @@ def test_client_url_leaves_transaction_capable_schemes_untouched():
 
 
 def test_client_url_preserves_path_and_query():
-    assert db.client_url("https://host/db?mode=rw") == "wss://host/db?mode=rw"
+    assert db.client_url("https://host/db?mode=rw") == "libsql://host/db?mode=rw"
 
 
 def test_get_transaction_actually_commits_under_test_url():
