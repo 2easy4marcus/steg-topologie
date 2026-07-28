@@ -13,6 +13,7 @@ can't be reached after retries -- that's expected to happen occasionally
 since it's a small, sometimes-slow government site. Just try again later.
 """
 
+import logging
 import sys
 from datetime import datetime, timezone
 
@@ -21,6 +22,8 @@ from . import evidence_pipeline
 from . import locality_dedup
 from . import observability
 from . import steg_scraper
+
+logger = logging.getLogger(__name__)
 
 
 def _localities_in_notice(notice: dict) -> list:
@@ -31,11 +34,16 @@ def _localities_in_notice(notice: dict) -> list:
     return [locality_dedup.resolve_locality(z) for z in raw if z]
 
 
-def process_notice(notice: dict, now: str) -> None:
+def process_notice(notice: dict, now: str) -> bool:
     """Upsert one scraped notice and update the derived locality/co-occurrence
     tables from it. Shared by the live scrape (run(), below) and the
     historical backfill (app/backfill_official.py) -- this is the one place
-    that decides how a notice turns into DB writes."""
+    that decides how a notice turns into DB writes.
+
+    Returns True only when the notice's ACTIVE evidence changed, i.e. a new
+    parse actually went live. That is the single definition of "imported" both
+    jobs count with; an upsert whose parse was refused activation returns
+    False and is deliberately not counted."""
     notice["scraped_at"] = now
     db.upsert_official_notice(notice)
     return evidence_pipeline.persist_notice(notice, fetched_at=now)
@@ -63,26 +71,52 @@ def run(verbose: bool = True) -> int:
         changed = False
         imported = 0
         unchanged = 0
-        for n in notices:
-            notice_changed = process_notice(n, now)
-            changed = notice_changed or changed
-            imported += int(notice_changed)
-            unchanged += int(not notice_changed)
-            observability.record_job_event(
+        failed = 0
+        try:
+            for n in notices:
+                try:
+                    notice_changed = process_notice(n, now)
+                except steg_scraper.FetchError:
+                    # A site-level failure is not a per-notice problem: every
+                    # remaining notice would fail identically. Let it abort the
+                    # job so the run is marked failed with "steg_http_error".
+                    raise
+                except Exception:
+                    # One unparseable/unwritable notice must not cost us the
+                    # whole scrape -- count it, make it visible, move on.
+                    failed += 1
+                    logger.exception(
+                        "notice import failed: notice_id=%s url=%s",
+                        n.get("id"),
+                        n.get("url"),
+                    )
+                    observability.record_job_event(
+                        job_id, "notice_failed", occurred_at=now
+                    )
+                    continue
+                changed = notice_changed or changed
+                imported += int(notice_changed)
+                unchanged += int(not notice_changed)
+                observability.record_job_event(
+                    job_id,
+                    "notice_imported" if notice_changed else "notice_unchanged",
+                    occurred_at=now,
+                )
+                if verbose:
+                    print(f"  upserted: {n['title']}")
+        finally:
+            # In a finally so a mid-loop abort (a re-raised FetchError, a
+            # KeyboardInterrupt) still leaves the counters it earned behind
+            # instead of reporting a run that apparently did nothing.
+            db.update_ingestion_run(
                 job_id,
-                "notice_imported" if notice_changed else "notice_unchanged",
-                occurred_at=now,
+                links_discovered=len(notices),
+                notices_imported=imported,
+                notices_unchanged=unchanged,
+                notices_failed=failed,
+                last_progress_at=now,
             )
-            if verbose:
-                print(f"  upserted: {n['title']}")
         rebuild_if_changed(changed, now, job_id)
-        db.update_ingestion_run(
-            job_id,
-            links_discovered=len(notices),
-            notices_imported=imported,
-            notices_unchanged=unchanged,
-            last_progress_at=now,
-        )
         db.finish_ingestion_run(job_id, "completed", now)
         observability.record_job_event(
             job_id, "job_completed", occurred_at=now

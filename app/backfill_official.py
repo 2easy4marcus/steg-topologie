@@ -67,14 +67,34 @@ def _archive_page_links(page: int) -> list:
     return sorted(hrefs)
 
 
+def _report_notice_outcome(callback, outcome: str, notice_id: str, url: str):
+    """Hand one non-imported notice to the caller's bookkeeping, if any.
+
+    Bookkeeping must never be able to take the crawl down with it: if
+    recording the outcome fails (e.g. the DB write behind it), log and carry
+    on -- we're in the middle of the crawl's own error handling."""
+    if callback is None:
+        return
+    try:
+        callback(outcome, notice_id, url)
+    except Exception:
+        logger.exception(
+            "recording notice outcome failed: outcome=%s notice_id=%s",
+            outcome,
+            notice_id,
+        )
+
+
 def _crawl_archive_unlocked(
     max_pages: int = DEFAULT_MAX_PAGES,
     verbose: bool = True,
     on_progress=None,
+    on_notice_outcome=None,
 ) -> int:
     """Crawl the archive page by page, importing any outage notice not
     already in the DB, until pagination is exhausted or max_pages is reached.
-    Returns the number of newly-imported notices.
+    Returns the number of newly-imported notices -- meaning notices whose
+    active evidence actually changed (see import_official.process_notice).
 
     An already-known or non-outage page does not end the crawl -- see the
     module docstring for why that distinction matters.
@@ -83,7 +103,14 @@ def _crawl_archive_unlocked(
     fresh_links_count, imported_so_far) twice per page that has fresh links:
     once right after they're found (before processing), and once after the
     page's per-notice loop finishes. It is not called for the final
-    pagination-exhausted page."""
+    pagination-exhausted page.
+
+    If on_notice_outcome is given, it is called as
+    on_notice_outcome(outcome, notice_id, url) for every notice that is not
+    imported, with outcome "skipped" (already in the DB, or not an outage
+    notice) or "failed" (it raised). Failures are logged and skipped, never
+    fatal -- except FetchError, which means the site itself is unreachable and
+    is left to abort the whole job."""
     db.init_db()
     now = datetime.now(timezone.utc).isoformat()
     imported = 0
@@ -135,31 +162,67 @@ def _crawl_archive_unlocked(
             notice_id = steg_scraper.slugify_id(url)
             seen_ids.add(notice_id)
             if db.official_notice_exists(notice_id):
-                continue  # already have it -- skip the fetch, keep crawling
-            detail = steg_scraper.parse_notice_detail(url)
-            title = detail.get("title") or ""
-            if steg_scraper.NOTICE_TITLE_MARKER not in title:
-                continue  # not an outage notice -- e.g. recruitment/tender news
-            m = steg_scraper.TITLE_RE.search(title)
-            notice = {
-                "id": notice_id,
-                "title": title,
-                "url": url,
-                "region": m.group("region").strip() if m else None,
-                "notice_date": m.group("date") if m else None,
-                "notice_time": m.group("time") if m else None,
-                "time_window_sentence": detail["time_window_sentence"],
-                "zones": detail["zones"],
-                "subregions": detail["subregions"],
-                "raw_text": detail["raw_text"],
-            }
-            evidence_changed = (
-                import_official.process_notice(notice, now)
-                or evidence_changed
-            )
-            imported += 1
-            if verbose:
-                print(f"  imported: {title}")
+                # already have it -- skip the fetch, keep crawling
+                _report_notice_outcome(
+                    on_notice_outcome, "skipped", notice_id, url
+                )
+                continue
+            try:
+                detail = steg_scraper.parse_notice_detail(url)
+                title = detail.get("title") or ""
+                if steg_scraper.NOTICE_TITLE_MARKER not in title:
+                    # not an outage notice -- e.g. recruitment/tender news
+                    _report_notice_outcome(
+                        on_notice_outcome, "skipped", notice_id, url
+                    )
+                    continue
+                m = steg_scraper.TITLE_RE.search(title)
+                notice = {
+                    "id": notice_id,
+                    "title": title,
+                    "url": url,
+                    "region": m.group("region").strip() if m else None,
+                    "notice_date": m.group("date") if m else None,
+                    "notice_time": m.group("time") if m else None,
+                    "time_window_sentence": detail["time_window_sentence"],
+                    "zones": detail["zones"],
+                    "subregions": detail["subregions"],
+                    "raw_text": detail["raw_text"],
+                }
+                notice_changed = import_official.process_notice(notice, now)
+            except steg_scraper.FetchError:
+                # The site is down/unreachable: not a per-notice problem, every
+                # remaining link would fail the same way. Let it propagate so
+                # crawl_archive marks the run failed with "steg_http_error"
+                # rather than quietly counting hundreds of "failures".
+                raise
+            except Exception:
+                # A parse or DB error on ONE notice: count it, log it loudly,
+                # and keep crawling. Losing an entire multi-page backfill to a
+                # single malformed page is the failure mode we're fixing.
+                logger.exception(
+                    "backfill notice failed: notice_id=%s url=%s",
+                    notice_id,
+                    url,
+                )
+                _report_notice_outcome(
+                    on_notice_outcome, "failed", notice_id, url
+                )
+                continue
+            # Count as imported only when the notice's active evidence really
+            # changed -- the same definition import_official.run() uses.
+            evidence_changed = notice_changed or evidence_changed
+            if notice_changed:
+                imported += 1
+                if verbose:
+                    print(f"  imported: {title}")
+            else:
+                # Upserted, but its parse was refused activation (already
+                # logged by evidence_pipeline.persist_notice) or was identical
+                # to the live one. Either way: not an import.
+                _report_notice_outcome(
+                    on_notice_outcome, "skipped", notice_id, url
+                )
 
         if on_progress is not None:
             on_progress(page, len(fresh_links), imported)
@@ -192,6 +255,26 @@ def crawl_archive(
         job_id, "job_started", occurred_at=started_at
     )
     progress = {"last_page": -1, "links": 0}
+    counters = {"failed": 0, "skipped": 0}
+
+    def record_notice_outcome(outcome, notice_id, url):
+        counters[outcome] += 1
+        if outcome != "failed":
+            # Skips are the normal case on a newest-first archive the daily
+            # scraper already owns, so they ride along on the next page-level
+            # progress write; one job event each would be pure noise.
+            return
+        # Failures are rare and important: persist and announce immediately, so
+        # a job that dies later still shows what it broke on.
+        occurred_at = datetime.now(timezone.utc).isoformat()
+        db.update_ingestion_run(
+            job_id,
+            notices_failed=counters["failed"],
+            last_progress_at=occurred_at,
+        )
+        observability.record_job_event(
+            job_id, "notice_failed", occurred_at=occurred_at
+        )
 
     def persist_progress(page, new_links_count, imported_so_far):
         if page != progress["last_page"]:
@@ -203,6 +286,8 @@ def crawl_archive(
             pages_scanned=page + 1,
             links_discovered=progress["links"],
             notices_imported=imported_so_far,
+            notices_skipped=counters["skipped"],
+            notices_failed=counters["failed"],
             last_progress_at=datetime.now(timezone.utc).isoformat(),
         )
         observability.record_job_event(
@@ -216,7 +301,7 @@ def crawl_archive(
 
     try:
         imported = _crawl_archive_unlocked(
-            max_pages, verbose, persist_progress
+            max_pages, verbose, persist_progress, record_notice_outcome
         )
         finished_at = datetime.now(timezone.utc).isoformat()
         db.finish_ingestion_run(

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 from datetime import datetime
 from uuid import uuid4
 
@@ -11,6 +12,8 @@ from .evidence_models import (
     ParsedNoticeEvidence,
     ParseStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def processing_identity(
@@ -131,8 +134,29 @@ def persist_notice(notice: dict, *, fetched_at: str) -> bool:
     )
     try:
         db.activate_notice_parse(notice["id"], parse_id, fetched_at)
-    except ValueError:
-        pass
+    except ValueError as exc:
+        # A refused activation is an expected outcome, not a crash: either the
+        # parse no longer belongs to the notice's latest snapshot, or its
+        # parse_status makes it ineligible (only 'ok', or 'warning' with 2+
+        # distinct localities, may go live). The notice simply keeps whatever
+        # parse it already had and this function reports "unchanged", which is
+        # correct -- one bad notice must not abort a whole ingestion job.
+        #
+        # It must NOT, however, be invisible: swallowing this silently is how a
+        # production bug that refused EVERY activation went unnoticed for days.
+        # There is no job_id at this call site (persist_notice is called from
+        # import_official.process_notice, which has none), so this is a log
+        # only -- no job event.
+        logger.warning(
+            "notice parse activation refused: notice_id=%s parse_id=%s "
+            "snapshot_id=%s parse_status=%s localities=%d reason=%s",
+            notice["id"],
+            parse_id,
+            snapshot["snapshot_id"],
+            evidence.parse_status.value,
+            len(evidence.localities),
+            exc,
+        )
     after = db.get_notice_state(notice["id"])
     return after["active_parse_id"] != previous_parse
 

@@ -314,15 +314,16 @@ class _Conn:
         return _Result(self._client.execute(sql, list(params or [])))
 
 
-class _Transaction(_Conn):
-    def commit(self):
-        self._client.commit()
-
-    def rollback(self):
-        self._client.rollback()
-
-    def close(self):
-        self._client.close()
+# NOTE: there is deliberately no transaction helper here, and none should be
+# added. libsql_client 0.3.1's HTTP transport refuses interactive transactions
+# outright (LibsqlError: TRANSACTIONS_NOT_SUPPORTED) and production's
+# TURSO_DATABASE_URL is https://. Its WebSocket transport does support them,
+# but this Turso host rejects the Hrana WebSocket handshake with
+# "400 Invalid response status", so switching schemes takes the app down at
+# startup instead (see _client_kwargs and tests/test_db_client_url.py).
+# Every guarded write below therefore folds its guard into a single atomic SQL
+# statement and decides the outcome from rows_affected -- the same pattern
+# acquire_lock/heartbeat_lock/release_lock already use.
 
 
 def _client_kwargs() -> dict:
@@ -344,21 +345,6 @@ def get_conn():
     try:
         yield _Conn(client)
     finally:
-        client.close()
-
-
-@contextmanager
-def get_transaction():
-    client = libsql_client.create_client_sync(**_client_kwargs())
-    transaction = _Transaction(client.transaction())
-    try:
-        yield transaction
-        transaction.commit()
-    except Exception:
-        transaction.rollback()
-        raise
-    finally:
-        transaction.close()
         client.close()
 
 
@@ -387,27 +373,28 @@ def get_model_build_public(build_id: str):
 def select_latest_snapshot(
     notice_id: str, snapshot_id: str, updated_at: str
 ) -> None:
-    with get_transaction() as tx:
-        snapshot = tx.execute(
-            """
-            SELECT snapshot_id FROM notice_snapshots
-            WHERE snapshot_id = ? AND notice_id = ?
-            """,
-            [snapshot_id, notice_id],
-        ).fetchone()
-        if snapshot is None:
-            raise ValueError("snapshot does not belong to notice")
-        tx.execute(
+    # The "snapshot belongs to notice" guard is the SELECT ... WHERE EXISTS
+    # feeding the upsert: no matching snapshot means no source row, so the
+    # upsert touches nothing and rows_affected is 0.
+    with get_conn() as conn:
+        result = conn.execute(
             """
             INSERT INTO notice_state(
                 notice_id, latest_snapshot_id, active_parse_id, updated_at
-            ) VALUES (?, ?, NULL, ?)
+            )
+            SELECT ?, ?, NULL, ?
+            WHERE EXISTS (
+                SELECT 1 FROM notice_snapshots
+                WHERE snapshot_id = ? AND notice_id = ?
+            )
             ON CONFLICT(notice_id) DO UPDATE SET
                 latest_snapshot_id = excluded.latest_snapshot_id,
                 updated_at = excluded.updated_at
             """,
-            [notice_id, snapshot_id, updated_at],
+            [notice_id, snapshot_id, updated_at, snapshot_id, notice_id],
         )
+        if result.rows_affected == 0:
+            raise ValueError("snapshot does not belong to notice")
 
 
 def get_notice_state(notice_id: str):
@@ -463,20 +450,21 @@ def save_parse_with_localities(evidence, parsed_at: str) -> bool:
         evidence.parser_version,
         evidence.normalization_version,
     )
-    with get_transaction() as tx:
-        existing = tx.execute(
-            "SELECT parse_id FROM notice_parses WHERE parse_id = ?",
-            [parse_id],
-        ).fetchone()
-        if existing:
-            return False
-        tx.execute(
+    with get_conn() as conn:
+        # The "parse_id already exists" guard is the WHERE NOT EXISTS: a
+        # duplicate parse_id yields no source row, so rows_affected is 0 and
+        # we report the duplicate exactly as before, without writing anything.
+        result = conn.execute(
             """
             INSERT INTO notice_parses(
                 parse_id, snapshot_id, notice_id, title, notice_date_raw,
                 notice_date_iso, parser_version, normalization_version,
                 parse_status, parse_warnings, parsed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM notice_parses WHERE parse_id = ?
+            )
             """,
             [
                 parse_id,
@@ -492,23 +480,33 @@ def save_parse_with_localities(evidence, parsed_at: str) -> bool:
                 evidence.parse_status.value,
                 json.dumps(evidence.warnings, ensure_ascii=False),
                 parsed_at,
+                parse_id,
             ],
         )
-        for locality in evidence.localities:
-            tx.execute(
-                """
+        if result.rows_affected == 0:
+            return False
+        if evidence.localities:
+            # One multi-row INSERT so the locality set is all-or-nothing.
+            rows = ", ".join(["(?, ?, ?, ?, ?)"] * len(evidence.localities))
+            params: list = []
+            for locality in evidence.localities:
+                params.extend(
+                    [
+                        parse_id,
+                        locality.ordinal,
+                        locality.raw_name,
+                        locality.canonical_name,
+                        locality.subregion_name,
+                    ]
+                )
+            conn.execute(
+                f"""
                 INSERT INTO notice_localities(
                     parse_id, ordinal, raw_name, canonical_name,
                     subregion_name
-                ) VALUES (?, ?, ?, ?, ?)
+                ) VALUES {rows}
                 """,
-                [
-                    parse_id,
-                    locality.ordinal,
-                    locality.raw_name,
-                    locality.canonical_name,
-                    locality.subregion_name,
-                ],
+                params,
             )
     return True
 
@@ -527,8 +525,41 @@ def processing_parse_id(
 def activate_notice_parse(
     notice_id: str, parse_id: str, activated_at: str
 ) -> None:
-    with get_transaction() as tx:
-        row = tx.execute(
+    with get_conn() as conn:
+        # Both guards (parse belongs to the notice's latest snapshot, and the
+        # parse is eligible) live in the UPDATE's WHERE clause, so the success
+        # path is one atomic statement.
+        result = conn.execute(
+            """
+            UPDATE notice_state
+            SET active_parse_id = ?, updated_at = ?
+            WHERE notice_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM notice_parses p
+                  WHERE p.parse_id = ?
+                    AND p.notice_id = notice_state.notice_id
+                    AND p.snapshot_id = notice_state.latest_snapshot_id
+                    AND (
+                        p.parse_status = 'ok'
+                        OR (
+                            p.parse_status = 'warning'
+                            AND (
+                                SELECT COUNT(DISTINCT nl.canonical_name)
+                                FROM notice_localities nl
+                                WHERE nl.parse_id = p.parse_id
+                            ) >= 2
+                        )
+                    )
+              )
+            """,
+            [parse_id, activated_at, notice_id, parse_id],
+        )
+        if result.rows_affected > 0:
+            return
+        # Failure path only: a single rows_affected == 0 cannot say which
+        # guard failed, so re-read (read-only) to raise the same error the
+        # transactional version would have raised.
+        row = conn.execute(
             """
             SELECT p.parse_status, p.snapshot_id, s.latest_snapshot_id,
                    (SELECT COUNT(DISTINCT canonical_name)
@@ -547,14 +578,9 @@ def activate_notice_parse(
         )
         if not eligible:
             raise ValueError("parse is not eligible for activation")
-        tx.execute(
-            """
-            UPDATE notice_state
-            SET active_parse_id = ?, updated_at = ?
-            WHERE notice_id = ?
-            """,
-            [parse_id, activated_at, notice_id],
-        )
+        # Unreachable unless a concurrent writer moved notice_state between
+        # the guarded UPDATE and this re-read. Refuse rather than retry.
+        raise ValueError("parse does not belong to latest snapshot")
 
 
 def create_model_build(build_id: str, created_at: str) -> None:
@@ -594,21 +620,24 @@ def complete_model_build(
 
 
 def activate_completed_model_build(build_id: str) -> None:
-    with get_transaction() as tx:
-        build = tx.execute(
-            "SELECT status FROM model_builds WHERE build_id = ?", [build_id]
-        ).fetchone()
-        if build is None or build["status"] != "completed":
-            raise ValueError("model build must be completed before activation")
-        tx.execute(
+    # The "build must be completed" guard is the WHERE EXISTS feeding the
+    # upsert: a missing or non-completed build yields no source row.
+    with get_conn() as conn:
+        result = conn.execute(
             """
             INSERT INTO model_state(singleton_id, active_build_id)
-            VALUES (1, ?)
+            SELECT 1, ?
+            WHERE EXISTS (
+                SELECT 1 FROM model_builds
+                WHERE build_id = ? AND status = 'completed'
+            )
             ON CONFLICT(singleton_id) DO UPDATE SET
                 active_build_id = excluded.active_build_id
             """,
-            [build_id],
+            [build_id, build_id],
         )
+        if result.rows_affected == 0:
+            raise ValueError("model build must be completed before activation")
 
 
 def active_build_id():
@@ -714,8 +743,33 @@ def completed_cluster_run_for(
 
 
 def activate_completed_cluster_run(run_id: str) -> None:
-    with get_transaction() as tx:
-        row = tx.execute(
+    with get_conn() as conn:
+        # Both guards (run completed, run's build is the active build) live in
+        # the WHERE EXISTS feeding the upsert, so the success path is one
+        # atomic statement.
+        result = conn.execute(
+            """
+            INSERT INTO cluster_state(singleton_id, active_cluster_run_id)
+            SELECT 1, ?
+            WHERE EXISTS (
+                SELECT 1 FROM cluster_runs cr
+                WHERE cr.run_id = ?
+                  AND cr.status = 'completed'
+                  AND cr.build_id = (
+                      SELECT ms.active_build_id FROM model_state ms
+                      WHERE ms.singleton_id = 1
+                  )
+            )
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                active_cluster_run_id = excluded.active_cluster_run_id
+            """,
+            [run_id, run_id],
+        )
+        if result.rows_affected > 0:
+            return
+        # Failure path only: re-read (read-only) to tell the two guards apart
+        # and raise exactly the error the transactional version raised.
+        row = conn.execute(
             """
             SELECT cr.status, cr.build_id, ms.active_build_id
             FROM cluster_runs cr
@@ -726,17 +780,10 @@ def activate_completed_cluster_run(run_id: str) -> None:
         ).fetchone()
         if row is None or row["status"] != "completed":
             raise ValueError("cluster run must be completed before activation")
-        if row["build_id"] != row["active_build_id"]:
-            raise ValueError("cluster run does not reference active build")
-        tx.execute(
-            """
-            INSERT INTO cluster_state(singleton_id, active_cluster_run_id)
-            VALUES (1, ?)
-            ON CONFLICT(singleton_id) DO UPDATE SET
-                active_cluster_run_id = excluded.active_cluster_run_id
-            """,
-            [run_id],
-        )
+        # Reached both when the build genuinely differs and (rarely) when a
+        # concurrent writer changed model_state; either way the run is not
+        # provably tied to the active build, so refuse.
+        raise ValueError("cluster run does not reference active build")
 
 
 def active_cluster_run_id():
@@ -1113,46 +1160,64 @@ def rollback_notice_parse(
     rolled_back_at: str,
     rollback_id: str,
 ) -> None:
-    with get_transaction() as tx:
-        parse = tx.execute(
+    with get_conn() as conn:
+        # The audit row is written FIRST, from a single statement that both
+        # enforces all three guards and reads the pre-update active_parse_id
+        # straight out of notice_state -- so from_parse_id can never be a
+        # stale value read in an earlier round trip. The guards are:
+        #   * FROM notice_state WHERE notice_id = ?  -> state must exist
+        #   * EXISTS(... p.notice_id = ?)            -> parse owned by notice
+        #   * ... AND p.parse_status <> 'failed'     -> parse not failed
+        # No source row means rows_affected == 0 and nothing is written.
+        result = conn.execute(
             """
-            SELECT parse_id, notice_id, parse_status
-            FROM notice_parses WHERE parse_id = ?
+            INSERT INTO notice_rollbacks(
+                id, notice_id, from_parse_id, to_parse_id, reason,
+                rolled_back_at
+            )
+            SELECT ?, ?, ns.active_parse_id, ?, ?, ?
+            FROM notice_state ns
+            WHERE ns.notice_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM notice_parses p
+                  WHERE p.parse_id = ?
+                    AND p.notice_id = ns.notice_id
+                    AND p.parse_status <> 'failed'
+              )
             """,
-            [parse_id],
-        ).fetchone()
-        if parse is None or parse["notice_id"] != notice_id:
-            raise ValueError("parse does not belong to notice")
-        if parse["parse_status"] == "failed":
-            raise ValueError("failed parse is not eligible for rollback")
-        state = tx.execute(
-            "SELECT active_parse_id FROM notice_state WHERE notice_id = ?",
-            [notice_id],
-        ).fetchone()
-        if state is None:
+            [
+                rollback_id,
+                notice_id,
+                parse_id,
+                reason,
+                rolled_back_at,
+                notice_id,
+                parse_id,
+            ],
+        )
+        if result.rows_affected == 0:
+            # Failure path only: re-read (read-only) to tell the three guards
+            # apart, in the same order the transactional version checked them.
+            parse = conn.execute(
+                """
+                SELECT parse_id, notice_id, parse_status
+                FROM notice_parses WHERE parse_id = ?
+                """,
+                [parse_id],
+            ).fetchone()
+            if parse is None or parse["notice_id"] != notice_id:
+                raise ValueError("parse does not belong to notice")
+            if parse["parse_status"] == "failed":
+                raise ValueError("failed parse is not eligible for rollback")
             raise ValueError("notice state not found")
-        tx.execute(
+        # Guards already passed atomically above, so this needs no guard of
+        # its own beyond addressing the right notice.
+        conn.execute(
             """
             UPDATE notice_state SET active_parse_id = ?, updated_at = ?
             WHERE notice_id = ?
             """,
             [parse_id, rolled_back_at, notice_id],
-        )
-        tx.execute(
-            """
-            INSERT INTO notice_rollbacks(
-                id, notice_id, from_parse_id, to_parse_id, reason,
-                rolled_back_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                rollback_id,
-                notice_id,
-                state["active_parse_id"],
-                parse_id,
-                reason,
-                rolled_back_at,
-            ],
         )
 
 

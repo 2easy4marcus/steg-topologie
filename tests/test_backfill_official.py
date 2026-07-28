@@ -1,4 +1,7 @@
 # tests/test_backfill_official.py
+import logging
+
+import pytest
 from bs4 import BeautifulSoup
 
 from app import backfill_official, db, steg_scraper
@@ -168,6 +171,72 @@ def test_crawl_archive_calls_on_progress_per_page(monkeypatch):
 
     assert (0, 1, 0) in calls  # page 0, 1 new link found, 0 imported so far (pre-processing call)
     assert (0, 1, 1) in calls  # page 0, 1 new link, 1 imported (post-processing call)
+
+
+def _one_bad_notice_archive(monkeypatch, failure):
+    """Page 0 offers notice-a (which raises `failure`) then notice-b (a good
+    outage notice); page 1 is empty so the crawl would stop there normally.
+    Links are walked in sorted order, so the bad one comes first."""
+    pages = {0: ["/fr/news/notice-a", "/fr/news/notice-b"], 1: []}
+
+    def fake_fetch(url):
+        page = 0 if url == backfill_official.ARCHIVE_URL else int(url.split("page=")[1])
+        return _page_soup(pages[page])
+
+    def fake_detail(url):
+        if url.endswith("notice-a"):
+            raise failure
+        return _fake_detail(
+            "إشعار بانقطاع الكهرباء - جهة الشمال - 11:00 20/07/2026",
+            ["Dekka", "Tozeur"],
+        )
+
+    monkeypatch.setattr(steg_scraper, "fetch", fake_fetch)
+    monkeypatch.setattr(steg_scraper, "parse_notice_detail", fake_detail)
+
+
+def test_one_failing_notice_does_not_abort_the_crawl(monkeypatch, caplog):
+    """A parse error on ONE notice must cost us that notice, not the run."""
+    _one_bad_notice_archive(monkeypatch, ValueError("malformed notice page"))
+
+    with caplog.at_level(logging.ERROR, logger="app.backfill_official"):
+        imported = backfill_official.crawl_archive(max_pages=5, verbose=False)
+
+    assert imported == 1
+    assert db.official_notice_exists("notice-a") is False
+    assert db.official_notice_exists("notice-b") is True  # crawl kept going
+    assert "notice-a" in caplog.text
+    assert "malformed notice page" in caplog.text
+
+
+def test_failed_notice_count_is_persisted_on_the_run(monkeypatch):
+    """notices_failed used to have no writer at all, so a run that broke on
+    every notice reported all zeros and looked healthy."""
+    _one_bad_notice_archive(monkeypatch, ValueError("malformed notice page"))
+
+    backfill_official.crawl_archive(max_pages=5, verbose=False)
+
+    run = db.latest_ingestion_run("backfill")
+    assert run["status"] == "completed"
+    assert run["notices_failed"] == 1
+    assert run["notices_imported"] == 1
+    events = [e["event_type"] for e in db.list_job_events(run["id"])]
+    assert "notice_failed" in events
+
+
+def test_fetch_error_on_a_notice_still_fails_the_whole_job(monkeypatch):
+    """A dead site is not a per-notice problem: it must abort the run and keep
+    reporting steg_http_error rather than be counted and skipped."""
+    _one_bad_notice_archive(monkeypatch, steg_scraper.FetchError("site down"))
+
+    with pytest.raises(steg_scraper.FetchError):
+        backfill_official.crawl_archive(max_pages=5, verbose=False)
+
+    assert db.official_notice_exists("notice-b") is False  # loop aborted
+    run = db.latest_ingestion_run("backfill")
+    assert run["status"] == "failed"
+    assert run["public_error_code"] == "steg_http_error"
+    assert run["notices_failed"] == 0  # not a per-notice failure
 
 
 def test_run_backfill_and_track_status_updates_status(monkeypatch):

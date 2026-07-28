@@ -1,5 +1,9 @@
 # tests/test_import_official_cooccurrence.py
-from app import db, import_official
+import logging
+
+import pytest
+
+from app import db, import_official, steg_scraper
 
 
 def test_run_records_cooccurrences_for_each_notice(monkeypatch):
@@ -82,6 +86,78 @@ def test_run_collapses_duplicate_locality_in_same_notice(monkeypatch):
     assert rows[("Dekka", "Tozeur")] == 1
     assert len(rows) == 1
     assert db.get_locality_notice_counts()["Dekka"] == 1
+
+
+def _two_notices():
+    return [
+        {
+            "id": "bad", "title": "t", "url": "http://x/bad",
+            "region": "جهة الشمال", "notice_date": "23/07/2026",
+            "notice_time": "18:00", "time_window_sentence": "s",
+            "zones": ["Dekka", "Tozeur"], "subregions": [], "raw_text": "raw",
+        },
+        {
+            "id": "good", "title": "t", "url": "http://x/good",
+            "region": "جهة الشمال", "notice_date": "23/07/2026",
+            "notice_time": "18:00", "time_window_sentence": "s",
+            "zones": ["Kebili", "Gabes"], "subregions": [], "raw_text": "raw",
+        },
+    ]
+
+
+def test_run_counts_and_skips_one_failing_notice(monkeypatch, caplog):
+    """One bad notice must cost that notice only, and must land in
+    notices_failed -- which previously had no writer anywhere in app/."""
+    monkeypatch.setattr(
+        import_official.steg_scraper, "scrape_current_notices", _two_notices
+    )
+    real_process = import_official.process_notice
+
+    def flaky_process(notice, now):
+        if notice["id"] == "bad":
+            raise ValueError("boom")
+        return real_process(notice, now)
+
+    monkeypatch.setattr(import_official, "process_notice", flaky_process)
+
+    with caplog.at_level(logging.ERROR, logger="app.import_official"):
+        import_official.run(verbose=False)
+
+    assert db.official_notice_exists("good") is True
+    assert db.official_notice_exists("bad") is False
+    assert "boom" in caplog.text
+    run = db.latest_ingestion_run("scrape")
+    assert run["status"] == "completed"
+    assert run["notices_failed"] == 1
+    assert run["notices_imported"] == 1
+    events = [e["event_type"] for e in db.list_job_events(run["id"])]
+    assert "notice_failed" in events
+
+
+def test_run_persists_counters_even_when_the_job_aborts(monkeypatch):
+    """A FetchError mid-loop still aborts the run (a dead site is not a
+    per-notice problem), but the counters earned before it must survive --
+    they used to be written once after the loop and so were lost entirely."""
+    monkeypatch.setattr(
+        import_official.steg_scraper, "scrape_current_notices", _two_notices
+    )
+    real_process = import_official.process_notice
+
+    def flaky_process(notice, now):
+        if notice["id"] == "good":
+            raise steg_scraper.FetchError("site down")
+        return real_process(notice, now)
+
+    monkeypatch.setattr(import_official, "process_notice", flaky_process)
+
+    with pytest.raises(steg_scraper.FetchError):
+        import_official.run(verbose=False)
+
+    run = db.latest_ingestion_run("scrape")
+    assert run["status"] == "failed"
+    assert run["public_error_code"] == "steg_http_error"
+    assert run["notices_imported"] == 1  # the notice processed before the abort
+    assert run["notices_failed"] == 0  # a site outage is not a notice failure
 
 
 def test_process_notice_upserts_and_records_cooccurrence():
