@@ -16,6 +16,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 import libsql_client
 
@@ -339,10 +340,9 @@ def client_url(url: str) -> str:
     and handshake protocol) rather than falling back to HTTP.
     file:, libsql:, ws: and wss: URLs pass through unchanged.
     """
-    if url.startswith("https://"):
-        return "libsql://" + url[len("https://"):]
-    if url.startswith("http://"):
-        return "libsql://" + url[len("http://"):]
+    parsed = urlparse(url)
+    if parsed.scheme in ("https", "http"):
+        return parsed._replace(scheme="libsql").geturl()
     return url
 
 
