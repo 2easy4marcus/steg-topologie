@@ -16,7 +16,6 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlparse
 
 import libsql_client
 
@@ -326,29 +325,6 @@ class _Transaction(_Conn):
         self._client.close()
 
 
-<<<<<<< Updated upstream
-def client_url(url: str) -> str:
-    """Normalize a database URL to a scheme that supports everything we need.
-
-    libsql_client's HTTP transport cannot do transactions at all -- it raises
-    TRANSACTIONS_NOT_SUPPORTED -- while its WebSocket transport can. Turso
-    serves the same database over both, but its dashboard hands out an
-    https:// URL, so a deployment configured the obvious way breaks the
-    moment any code path opens a transaction (this happened in production:
-    every evidence-pipeline notice import failed). Mapping https:// to libsql://
-    here means the scheme in the env var is parsed natively as the standard
-    Turso/libSQL scheme (which leverages a fully-configured WebSocket connection
-    and handshake protocol) rather than falling back to HTTP.
-    file:, libsql:, ws: and wss: URLs pass through unchanged.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme in ("https", "http"):
-        return parsed._replace(scheme="libsql").geturl()
-    return url
-
-
-=======
->>>>>>> Stashed changes
 def _client_kwargs() -> dict:
     # NOTE: do NOT rewrite an https:// DB_URL to wss:// here. It looks like an
     # easy way to get transaction support (libsql_client's HTTP transport
