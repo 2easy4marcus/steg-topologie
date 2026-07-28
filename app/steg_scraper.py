@@ -36,7 +36,7 @@ HEADERS = {
 # timing out isn't unusual, especially during high-traffic periods (e.g. when
 # there actually are outages being announced). Retry with backoff rather than
 # failing on the first hiccup.
-CONNECT_TIMEOUT = 10
+CONNECT_TIMEOUT = 20
 READ_TIMEOUT = 45
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 3

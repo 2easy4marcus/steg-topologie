@@ -34,7 +34,7 @@ from . import observability
 from . import steg_scraper
 
 ARCHIVE_URL = f"{steg_scraper.BASE_URL}/fr/news"
-PAGE_DELAY_SECONDS = 1.5
+PAGE_DELAY_SECONDS = 3.0
 DEFAULT_MAX_PAGES = 100
 
 NEWS_HREF_RE = re.compile(r"^/fr/news/[^?]+$")
@@ -158,6 +158,8 @@ def _crawl_archive_unlocked(
                 or evidence_changed
             )
             imported += 1
+            if on_progress is not None:
+                on_progress(page, len(fresh_links), imported)
             if verbose:
                 print(f"  imported: {title}")
 
