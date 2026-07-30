@@ -23,6 +23,129 @@ This plan is executed in order on branch `feat/evidence-model-v2`.
 Each boundary must leave working, testable software. The public visual redesign
 and hosting changes are separate projects.
 
+## Execution hardening amendments
+
+These constraints were added after parallel pre-implementation review. They
+override any conflicting example or abbreviated signature later in this plan.
+
+### Database and migration safety
+
+- HTTP libSQL does not support interactive transactions, but the installed
+  client's `batch()` implementation sends `BEGIN`, ordered guarded statements,
+  `COMMIT`, and conditional `ROLLBACK` in one request. Migrations use that batch
+  API, never URL rewriting or the interactive transaction API.
+- Migration files are immutable and checksummed. Applying a version whose
+  stored checksum differs is a hard error.
+- SQL is parsed with SQLite's statement-completeness rules, not
+  `text.split(";")`, so semicolons in strings and future triggers are safe.
+- Migration application is concurrency-safe and retryable. Tests cover
+  rollback, duplicate/concurrent application, and checksum mismatch.
+- New tables add database-level constraints for confidence ranges, finite
+  statuses, canonical pair ordering, and required parent/build identities.
+
+### Source and canonical-data safety
+
+- `DatasetSource` describes a logical/versioned source. `SourceArtifact`
+  describes one immutable file/download and carries checksum, media type,
+  acquisition metadata, schema version, and optional license metadata.
+- Manifest paths must be relative and remain inside the configured source root
+  after resolving `..` and symlinks. Absolute paths and escapes are rejected.
+- Canonical imports build into staging rows and activate only after all
+  validation succeeds, preserving the last-known-good snapshot on failure.
+- Delegations use globally valid `adm_id` (or normalized governorate/delegation
+  composite identity), never delegation-local `deleg_id` alone.
+- The importer explicitly reports and quarantines null names, duplicate IDs,
+  and the known GeoJSON/TopoJSON row-count disagreement. It does not silently
+  choose between 272 and 271 records.
+- Tests use synthetic source fixtures. Validation against the private
+  `docs/data` mount is optional and skipped unless an explicit source-root
+  environment variable is present.
+
+### Observability and API security
+
+- Request metrics use a mutable, lock-protected per-request accumulator inside
+  a `ContextVar`, because FastAPI sync handlers run in worker threads.
+- Middleware records metrics in `finally`, uses route templates only, and maps
+  unmatched routes to `<unmatched>`; raw paths and query strings are never
+  labels.
+- Existing request IDs remain intact. DB calls are labelled generically as
+  local/libSQL rather than always "Turso".
+- Auth failures never log secret values, lengths, or fingerprints. Backfill
+  status and all internal job errors are protected and sanitized.
+- The browser operations page stays public and consumes only a privacy-safe
+  public summary. `OPS_SECRET` is never placed in HTML, JavaScript,
+  `sessionStorage`, or browser requests. The protected operations endpoint is
+  intended for curl, Postman, and automation.
+- Public OpenAPI is generated from an allow-listed public route set, rather
+  than generating everything and deleting paths afterward. Internal schemas
+  are returned only as protected JSON; there is no browser UI that stores the
+  internal secret.
+- Documentation routes are registered before the static catch-all. Generated
+  OpenAPI/Postman artifacts are scanned for secrets, internal paths, Turso
+  URLs, private asset IDs, and citizen-report payloads.
+- The public Postman collection and protected security-smoke collection are
+  separate deterministic artifacts with explicit status/schema tests.
+
+### Evidence snapshot and graph semantics
+
+- Every parsed subregion/cell carries a stable `scope_ordinal` and derived
+  `scope_id`, separate from its display name. Duplicate or missing headings
+  therefore remain distinct scopes. This change bumps the parser version.
+- Each evidence build first pins immutable `(build_id, notice_id, parse_id)`
+  rows and build-owned locality observations. Marginals, scoped pairs,
+  readiness, edge provenance, and counts derive only from that snapshot.
+- Build population is idempotent and retryable. A parser activation during a
+  build cannot change that build's source population.
+- V2 uses ordinary scoped PPMI followed by an explicit evidence-reliability
+  regularizer. Confidence is not described as a fractional PMI count. Stored
+  evidence includes parser, canonicalization, geographic, and temporal
+  confidence components separately.
+- Model edges require a configurable minimum of two distinct outage dates.
+  One-date/singleton observations remain visible diagnostically but cannot
+  become clustering edges. Probability inputs enforce
+  `0 < pair_count <= each marginal <= N`.
+- Readiness is computed from scoped observations, including valid scoped
+  notices and largest scoped-notice influence, not whole-notice Cartesian
+  pairs.
+- The existing `build_ppmi_graph(cooccurrences, total_notices)` remains a
+  compatibility facade. V2 has an explicit build-specific entry point and
+  build-specific marginals.
+
+### Cluster identity and validation
+
+- Stable cluster IDs come from a persistent monotonic allocator; IDs are never
+  reconstructed from `MAX(cluster_id)` and never reused after retention.
+- Maximum-weight one-to-one matching is authoritative for ID inheritance.
+  Lineage records all eligible predecessor relationships, including split and
+  merge roles, while the globally optimal matched predecessor supplies the
+  inherited ID.
+- Validation is versioned and stored with build/config/algorithm identities,
+  random seed, and metric definitions. Bootstrap sampling units are outage
+  dates. Membership agreement is label-invariant (pairwise co-membership
+  agreement and/or ARI).
+- Temporal holdout never splits notices from the same date. The report defines
+  unseen-locality treatment, prediction rule, recall denominator, baselines,
+  largest-notice influence, and parser/config sensitivity.
+- A failed or unpublished validation run cannot replace the active cluster
+  run. Activation requires a completed run for the active build and a stored
+  `published` decision.
+
+### Private topology pilot
+
+- OSM ingestion retains topology-node coordinates, way node references, and
+  supported relation membership so way-based substations can connect to lines.
+  Unsupported relation structures are quarantined explicitly.
+- Candidate generation is implemented before ranking: cluster/locality
+  geography bounds candidate assets, then topology/service features score
+  them.
+- Candidate gates require measured independent dates, accepted geography,
+  registered source coverage, at least one topology/service signal, and
+  feature completeness. There is no default that fabricates sufficient
+  evidence.
+- Candidate rows carry evidence-build, topology-snapshot, model-config, and
+  scoring-version identities. Sensitivity analysis defines deterministic
+  perturbations, tie handling, and asset-ID tie-breaking.
+
 ## Target file structure
 
 ```text
