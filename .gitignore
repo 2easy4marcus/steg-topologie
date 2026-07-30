@@ -7,3 +7,8 @@ server.log
 .DS_Store
 .pytest_cache/
 .worktrees/
+.env
+.superpowers/
+docs/tunisia-*.osm.pbf
+data/processed/
+.venv/
