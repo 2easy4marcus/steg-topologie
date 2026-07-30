@@ -519,6 +519,31 @@ def test_reconcile_absorbs_busy_reads_after_a_lost_race(
     assert table is None  # the loser's batch rolled back in full
 
 
+def test_reconcile_gives_up_after_its_budget_and_reraises_the_batch_error(
+    empty_migration_db: Path, conn_spy, fake_backoff_clock
+):
+    """The reconciliation read stays busy for the whole RECONCILE budget.
+
+    Unlike the absorbs-busy-reads test above, this busy condition never
+    clears, so _retry_on_busy inside _applied_checksum eventually exhausts
+    RECONCILE_RETRY_BUDGET_SECONDS and raises. apply_all() must still surface
+    the original batch failure, not that busy error -- the reconciliation
+    read exists only to explain the batch failure away, and on its own
+    failure the caller's real error must win.
+    """
+    migration = empty_migration_db / "0001_persistent_busy.sql"
+    migration.write_text("CREATE TABLE persistent(id INTEGER PRIMARY KEY);")
+    checksum = migrations._checksum(migration.read_bytes())
+    _lose_the_race(conn_spy, "0001", checksum, busy_reads=10**9)
+
+    with pytest.raises(Exception) as exc_info:
+        migrations.apply_all()
+
+    assert not isinstance(exc_info.value, BusyError)
+    assert "schema_migrations" in str(exc_info.value)
+    assert fake_backoff_clock.delays  # it retried before giving up
+
+
 def test_reconcile_still_raises_on_a_recorded_checksum_mismatch(
     empty_migration_db: Path, conn_spy, fake_backoff_clock
 ):
@@ -629,9 +654,8 @@ def test_duplicate_migration_version_is_rejected(empty_migration_db: Path):
 
 
 def test_migrations_run_in_parsed_version_order_not_directory_order(
-    empty_migration_db: Path,
+    empty_migration_db: Path, monkeypatch
 ):
-    # Written 0010 first, so directory order is the wrong order.
     (empty_migration_db / "0010_second.sql").write_text(
         "INSERT INTO ordering_log(value) VALUES ('second');"
     )
@@ -641,6 +665,16 @@ def test_migrations_run_in_parsed_version_order_not_directory_order(
         INSERT INTO ordering_log(value) VALUES ('first');
         """
     )
+    # Directory/glob order happens to be alphabetical (== numeric here) on
+    # this filesystem, which would let an unsorted _discover_migrations pass
+    # by accident. Force glob to hand back the wrong order so only the
+    # explicit sort-by-parsed-version can produce the right one.
+    real_glob = Path.glob
+
+    def reversed_glob(self, pattern):
+        return reversed(list(real_glob(self, pattern)))
+
+    monkeypatch.setattr(Path, "glob", reversed_glob)
 
     migrations.apply_all()
 

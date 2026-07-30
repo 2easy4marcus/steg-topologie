@@ -143,6 +143,7 @@ def test_artifact_validates_checksum_and_nonnegative_size():
         checksum_sha256="a" * 64,
         byte_size=0,
         retrieved_at="2026-07-30T00:00:00Z",
+        registered_at="2026-07-30T00:00:00Z",
         media_type="application/geo+json",
         schema_version="1",
         license_id="CC-BY-4.0",
@@ -162,6 +163,23 @@ def test_artifact_validates_checksum_and_nonnegative_size():
         SourceArtifact(**{**artifact.model_dump(), "byte_size": -1})
 
 
+def test_artifact_requires_registered_at():
+    # registered_at mirrors a NOT NULL DEFAULT column in the database; the
+    # DEFAULT is invisible to Pydantic, so a caller must supply it explicitly
+    # rather than get a None that would only fail later at the DB layer.
+    with pytest.raises(ValidationError, match="registered_at"):
+        SourceArtifact(
+            artifact_id="delegations-20260730",
+            source_id="delegations-v1",
+            relative_path="delegations/delegations.geojson",
+            checksum_sha256="a" * 64,
+            byte_size=0,
+            retrieved_at="2026-07-30T00:00:00Z",
+            media_type="application/geo+json",
+            schema_version="1",
+        )
+
+
 def test_artifact_contract_is_frozen_and_forbids_extra_fields():
     artifact = SourceArtifact(
         artifact_id="delegations-20260730",
@@ -170,6 +188,7 @@ def test_artifact_contract_is_frozen_and_forbids_extra_fields():
         checksum_sha256="a" * 64,
         byte_size=1,
         retrieved_at="2026-07-30T00:00:00Z",
+        registered_at="2026-07-30T00:00:00Z",
         media_type="application/geo+json",
         schema_version="1",
     )
@@ -281,27 +300,51 @@ def test_database_checks_reject_invalid_registry_values(source_registry_db):
                           'manual', '1', 'Description')
                 """
             )
-        with pytest.raises(Exception):
+
+        # Valid FK references, so the byte_size CHECK is the only thing that
+        # can reject this insert.
+        _add_source(conn, "checks-source")
+        with pytest.raises(Exception, match="byte_size >= 0"):
             conn.execute(
                 """
                 INSERT INTO source_artifacts(
                     artifact_id, source_id, relative_path, checksum_sha256,
                     byte_size, retrieved_at, media_type, schema_version
-                ) VALUES ('bad-size', 'missing-source', 'file.csv', ?, -1,
+                ) VALUES ('bad-size', 'checks-source', 'file.csv', ?, -1,
                           '2026-07-30T00:00:00Z', 'text/csv', '1')
                 """,
                 ["a" * 64],
             )
-        with pytest.raises(Exception):
+
+        # Valid FK references (source/artifact/build), so each insert below
+        # is invalid only in the single value the matched CHECK rejects.
+        _add_artifact(conn, "checks-artifact", "checks-source")
+        _add_build(conn, "checks-build")
+        with pytest.raises(Exception, match="coordinate_complete IN"):
             conn.execute(
                 """
                 INSERT INTO service_units(
-                    unit_id, unit_type, name, region, governorate,
-                    coordinate_complete, source_id, artifact_id,
+                    unit_id, canonical_build_id, unit_type, name, region,
+                    governorate, coordinate_complete, source_id, artifact_id,
                     source_record_key, transformation_version, created_at,
                     confidence
-                ) VALUES ('unit-1', 'district', 'Unit', 'South', 'Sfax', 2,
-                          'source', 'artifact', 'row-1', 'v1',
+                ) VALUES ('unit-1', 'checks-build', 'district', 'Unit',
+                          'South', 'Sfax', 2, 'checks-source',
+                          'checks-artifact', 'row-1', 'v1',
+                          '2026-07-30T00:00:00Z', 0.5)
+                """
+            )
+        with pytest.raises(Exception, match="confidence >= 0"):
+            conn.execute(
+                """
+                INSERT INTO service_units(
+                    unit_id, canonical_build_id, unit_type, name, region,
+                    governorate, coordinate_complete, source_id, artifact_id,
+                    source_record_key, transformation_version, created_at,
+                    confidence
+                ) VALUES ('unit-2', 'checks-build', 'district', 'Unit',
+                          'South', 'Sfax', 0, 'checks-source',
+                          'checks-artifact', 'row-2', 'v1',
                           '2026-07-30T00:00:00Z', 1.2)
                 """
             )
@@ -339,6 +382,132 @@ def test_reference_guard_triggers_are_installed(source_registry_db):
         "restrict_canonical_builds_delete",
         "restrict_canonical_builds_primary_key_update",
     } <= triggers
+
+
+def test_canonical_state_update_rejects_non_completed_build(source_registry_db):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-building")
+
+        with pytest.raises(Exception, match="not a completed build"):
+            conn.execute(
+                """
+                UPDATE canonical_state SET active_build_id = 'build-building'
+                WHERE state_id = 1
+                """
+            )
+
+
+def test_canonical_state_insert_rejects_non_completed_build(source_registry_db):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-building")
+        # canonical_state's singleton is seeded by the migration; deleting it
+        # (no restrict trigger guards this table's deletes) lets this test
+        # exercise the INSERT-path guard directly instead of only UPDATE.
+        conn.execute("DELETE FROM canonical_state WHERE state_id = 1")
+
+        with pytest.raises(Exception, match="not a completed build"):
+            conn.execute(
+                """
+                INSERT INTO canonical_state(state_id, active_build_id)
+                VALUES (1, 'build-building')
+                """
+            )
+
+
+def test_canonical_state_update_accepts_completed_build(source_registry_db):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-done", status="completed")
+
+        conn.execute(
+            """
+            UPDATE canonical_state SET active_build_id = 'build-done'
+            WHERE state_id = 1
+            """
+        )
+
+        row = conn.execute(
+            "SELECT active_build_id FROM canonical_state WHERE state_id = 1"
+        ).fetchone()
+        assert row["active_build_id"] == "build-done"
+
+
+def test_canonical_builds_status_frozen_while_referenced(source_registry_db):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-active", status="completed")
+        conn.execute(
+            """
+            UPDATE canonical_state SET active_build_id = 'build-active'
+            WHERE state_id = 1
+            """
+        )
+
+        with pytest.raises(Exception, match="frozen while active"):
+            conn.execute(
+                """
+                UPDATE canonical_builds
+                SET status = 'failed', finished_at = '2026-07-30T02:00:00Z'
+                WHERE canonical_build_id = 'build-active'
+                """
+            )
+
+
+def test_canonical_builds_status_transition_is_restricted(source_registry_db):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-done2", status="completed")
+        with pytest.raises(Exception, match="transition is not allowed"):
+            conn.execute(
+                """
+                UPDATE canonical_builds
+                SET status = 'building', finished_at = NULL
+                WHERE canonical_build_id = 'build-done2'
+                """
+            )
+
+        _add_build(conn, "build-failed", status="failed")
+        with pytest.raises(Exception, match="transition is not allowed"):
+            conn.execute(
+                """
+                UPDATE canonical_builds SET status = 'completed'
+                WHERE canonical_build_id = 'build-failed'
+                """
+            )
+
+
+def test_canonical_builds_building_to_terminal_transitions_allowed(
+    source_registry_db,
+):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-progress")
+        conn.execute(
+            """
+            UPDATE canonical_builds
+            SET status = 'completed', finished_at = '2026-07-30T02:00:00Z'
+            WHERE canonical_build_id = 'build-progress'
+            """
+        )
+        row = conn.execute(
+            """
+            SELECT status FROM canonical_builds
+            WHERE canonical_build_id = 'build-progress'
+            """
+        ).fetchone()
+        assert row["status"] == "completed"
+
+        _add_build(conn, "build-progress2")
+        conn.execute(
+            """
+            UPDATE canonical_builds
+            SET status = 'failed', finished_at = '2026-07-30T02:00:00Z'
+            WHERE canonical_build_id = 'build-progress2'
+            """
+        )
+        row = conn.execute(
+            """
+            SELECT status FROM canonical_builds
+            WHERE canonical_build_id = 'build-progress2'
+            """
+        ).fetchone()
+        assert row["status"] == "failed"
 
 
 def test_trigger_rejects_artifact_insert_for_missing_source(
@@ -482,15 +651,16 @@ def test_restrict_triggers_reject_referenced_parent_delete_and_pk_update(
             )
             """
         )
+        _add_build(conn, "build-1")
         conn.execute(
             """
             INSERT INTO administrative_areas(
-                area_id, area_level, name_ar, geometry_wkt, source_id,
-                artifact_id, source_record_key, transformation_version,
-                created_at, confidence
+                area_id, canonical_build_id, area_level, name_ar,
+                geometry_wkt, source_id, artifact_id, source_record_key,
+                transformation_version, created_at, confidence
             ) VALUES (
-                'area-parent', 'governorate', 'Parent', 'POINT (0 0)',
-                'source-one', 'artifact-one', 'parent', 'v1',
+                'area-parent', 'build-1', 'governorate', 'Parent',
+                'POINT (0 0)', 'source-one', 'artifact-one', 'parent', 'v1',
                 '2026-07-30T00:00:00Z', 1
             )
             """
@@ -498,11 +668,12 @@ def test_restrict_triggers_reject_referenced_parent_delete_and_pk_update(
         conn.execute(
             """
             INSERT INTO administrative_areas(
-                area_id, area_level, name_ar, parent_area_id, geometry_wkt,
-                source_id, artifact_id, source_record_key,
-                transformation_version, created_at, confidence
+                area_id, canonical_build_id, area_level, name_ar,
+                parent_area_id, geometry_wkt, source_id, artifact_id,
+                source_record_key, transformation_version, created_at,
+                confidence
             ) VALUES (
-                'area-child', 'delegation', 'Child', 'area-parent',
+                'area-child', 'build-1', 'delegation', 'Child', 'area-parent',
                 'POINT (0 0)', 'source-one', 'artifact-one', 'child', 'v1',
                 '2026-07-30T00:00:00Z', 1
             )
@@ -511,12 +682,12 @@ def test_restrict_triggers_reject_referenced_parent_delete_and_pk_update(
         conn.execute(
             """
             INSERT INTO service_units(
-                unit_id, unit_type, name, region, governorate,
-                coordinate_complete, source_id, artifact_id,
+                unit_id, canonical_build_id, unit_type, name, region,
+                governorate, coordinate_complete, source_id, artifact_id,
                 source_record_key, transformation_version, created_at,
                 confidence
             ) VALUES (
-                'unit-one', 'district', 'Unit', 'South', 'Sfax', 0,
+                'unit-one', 'build-1', 'district', 'Unit', 'South', 'Sfax', 0,
                 'source-one', 'artifact-one', 'unit', 'v1',
                 '2026-07-30T00:00:00Z', 1
             )
@@ -525,12 +696,12 @@ def test_restrict_triggers_reject_referenced_parent_delete_and_pk_update(
         conn.execute(
             """
             INSERT INTO locality_context(
-                locality, context_build_id, delegation_area_id,
-                service_unit_id, spatial_confidence, source_id, artifact_id,
-                transformation_version, created_at
+                canonical_build_id, locality, context_build_id,
+                delegation_area_id, service_unit_id, spatial_confidence,
+                source_id, artifact_id, transformation_version, created_at
             ) VALUES (
-                'Locality', 'build-one', 'area-parent', 'unit-one', 1,
-                'source-one', 'artifact-one', 'v1',
+                'build-1', 'Locality', 'build-one', 'area-parent',
+                'unit-one', 1, 'source-one', 'artifact-one', 'v1',
                 '2026-07-30T00:00:00Z'
             )
             """
@@ -585,6 +756,211 @@ def test_restrict_triggers_reject_referenced_parent_delete_and_pk_update(
         for sql, message in guarded_operations:
             with pytest.raises(Exception, match=message.replace(".", r"\.")):
                 conn.execute(sql)
+
+
+def test_update_or_replace_rejects_dataset_sources_identity_theft(
+    source_registry_db,
+):
+    with db.get_conn() as conn:
+        _add_source(conn, "src-h1")
+        _add_source(conn, "src-h2")
+        _add_artifact(conn, "art-h2", "src-h2")
+
+        with pytest.raises(Exception, match="dataset_sources row already exists"):
+            conn.execute(
+                """
+                UPDATE OR REPLACE dataset_sources SET source_id = 'src-h2',
+                    title = 'HIJACKED'
+                WHERE source_id = 'src-h1'
+                """
+            )
+
+        rows = {
+            row["source_id"]: row["title"]
+            for row in conn.execute(
+                "SELECT source_id, title FROM dataset_sources"
+            ).fetchall()
+        }
+        assert rows == {"src-h1": "Source", "src-h2": "Source"}
+
+
+def test_update_or_replace_rejects_canonical_builds_identity_theft(
+    source_registry_db,
+):
+    with db.get_conn() as conn:
+        _add_build(conn, "build-j1", status="building")
+        _add_build(conn, "build-j2", status="completed")
+        conn.execute(
+            """
+            UPDATE canonical_state SET active_build_id = 'build-j2'
+            WHERE state_id = 1
+            """
+        )
+
+        with pytest.raises(
+            Exception, match="canonical_builds row already exists"
+        ):
+            conn.execute(
+                """
+                UPDATE OR REPLACE canonical_builds
+                SET canonical_build_id = 'build-j2', status = 'building',
+                    finished_at = NULL, failure_reason = NULL
+                WHERE canonical_build_id = 'build-j1'
+                """
+            )
+
+        row = conn.execute(
+            """
+            SELECT status FROM canonical_builds
+            WHERE canonical_build_id = 'build-j2'
+            """
+        ).fetchone()
+        assert row["status"] == "completed"
+
+
+def test_update_or_replace_rejects_administrative_areas_identity_theft(
+    source_registry_db,
+):
+    with db.get_conn() as conn:
+        _add_source(conn, "src-k")
+        _add_artifact(conn, "art-k", "src-k")
+        _add_build(conn, "build-k")
+        _add_area(conn, "area-k1", "build-k", "src-k", "art-k")
+        _add_area(conn, "area-k2", "build-k", "src-k", "art-k", parent="area-k1")
+
+        with pytest.raises(
+            Exception, match="administrative_areas row already exists"
+        ):
+            conn.execute(
+                """
+                UPDATE OR REPLACE administrative_areas SET area_id = 'area-k1'
+                WHERE area_id = 'area-k2' AND canonical_build_id = 'build-k'
+                """
+            )
+
+        rows = {
+            row["area_id"] for row in conn.execute(
+                """
+                SELECT area_id FROM administrative_areas
+                WHERE canonical_build_id = 'build-k'
+                """
+            ).fetchall()
+        }
+        assert rows == {"area-k1", "area-k2"}
+
+
+def test_update_or_replace_rejects_service_units_identity_theft(
+    source_registry_db,
+):
+    with db.get_conn() as conn:
+        _add_source(conn, "src-s")
+        _add_artifact(conn, "art-s", "src-s")
+        _add_build(conn, "build-s")
+        _add_unit(conn, "unit-s1", "build-s", "src-s", "art-s")
+        _add_unit(conn, "unit-s2", "build-s", "src-s", "art-s")
+
+        with pytest.raises(Exception, match="service_units row already exists"):
+            conn.execute(
+                """
+                UPDATE OR REPLACE service_units SET unit_id = 'unit-s2'
+                WHERE unit_id = 'unit-s1' AND canonical_build_id = 'build-s'
+                """
+            )
+
+        rows = {
+            row["unit_id"] for row in conn.execute(
+                """
+                SELECT unit_id FROM service_units
+                WHERE canonical_build_id = 'build-s'
+                """
+            ).fetchall()
+        }
+        assert rows == {"unit-s1", "unit-s2"}
+
+
+def test_administrative_areas_canonical_build_id_is_immutable(
+    source_registry_db,
+):
+    with db.get_conn() as conn:
+        _add_source(conn, "src-e")
+        _add_artifact(conn, "art-e", "src-e")
+        _add_build(conn, "build-e1")
+        _add_build(conn, "build-e2")
+        _add_area(conn, "area-e", "build-e1", "src-e", "art-e")
+
+        with pytest.raises(
+            Exception,
+            match="administrative_areas.canonical_build_id is immutable",
+        ):
+            conn.execute(
+                """
+                UPDATE administrative_areas SET canonical_build_id = 'build-e2'
+                WHERE area_id = 'area-e' AND canonical_build_id = 'build-e1'
+                """
+            )
+
+        row = conn.execute(
+            """
+            SELECT canonical_build_id FROM administrative_areas
+            WHERE area_id = 'area-e'
+            """
+        ).fetchone()
+        assert row["canonical_build_id"] == "build-e1"
+
+
+def test_service_units_canonical_build_id_is_immutable(source_registry_db):
+    with db.get_conn() as conn:
+        _add_source(conn, "src-su")
+        _add_artifact(conn, "art-su", "src-su")
+        _add_build(conn, "build-su1")
+        _add_build(conn, "build-su2")
+        _add_unit(conn, "unit-su", "build-su1", "src-su", "art-su")
+
+        with pytest.raises(
+            Exception, match="service_units.canonical_build_id is immutable"
+        ):
+            conn.execute(
+                """
+                UPDATE service_units SET canonical_build_id = 'build-su2'
+                WHERE unit_id = 'unit-su' AND canonical_build_id = 'build-su1'
+                """
+            )
+
+        row = conn.execute(
+            """
+            SELECT canonical_build_id FROM service_units
+            WHERE unit_id = 'unit-su'
+            """
+        ).fetchone()
+        assert row["canonical_build_id"] == "build-su1"
+
+
+def test_locality_context_canonical_build_id_is_immutable(source_registry_db):
+    with db.get_conn() as conn:
+        _add_source(conn, "src-lc")
+        _add_artifact(conn, "art-lc", "src-lc")
+        _add_build(conn, "build-lc1")
+        _add_build(conn, "build-lc2")
+        _add_locality(conn, "Locality-lc", "build-lc1", "src-lc", "art-lc")
+
+        with pytest.raises(
+            Exception,
+            match="locality_context.canonical_build_id is immutable",
+        ):
+            conn.execute(
+                """
+                UPDATE locality_context SET canonical_build_id = 'build-lc2'
+                WHERE locality = 'Locality-lc' AND canonical_build_id = 'build-lc1'
+                """
+            )
+
+        row = conn.execute(
+            """
+            SELECT canonical_build_id FROM locality_context
+            WHERE locality = 'Locality-lc'
+            """
+        ).fetchone()
+        assert row["canonical_build_id"] == "build-lc1"
 
 
 def test_restrict_trigger_allows_unreferenced_parent_delete(

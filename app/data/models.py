@@ -1,9 +1,18 @@
 """Pydantic contracts for the source-provenance registry.
 
+This module defines contracts for the three registry tables only:
+``dataset_sources`` (``DatasetSource``), ``source_artifacts``
+(``SourceArtifact``), and ``quarantine_records`` (``QuarantinedRecord``).
 Every rule expressed here has a matching CHECK constraint (or guard trigger)
 in ``migrations/0001_source_registry.sql``.  The two layers are deliberately
 kept in exact parity: a value these contracts accept must be insertable, and
 a value these contracts reject must be rejected by the database too.
+
+The five canonical-build staging tables (``canonical_builds``,
+``canonical_state``, ``administrative_areas``, ``service_units``,
+``locality_context``) are intentionally SQL-only: their CHECK constraints and
+guard triggers are their sole contract until a caller (Task 3's canonical
+build writer) needs Python-side construction or validation of those rows.
 """
 
 from datetime import datetime
@@ -99,7 +108,7 @@ class SourceArtifact(RegistryContract):
     checksum_sha256: str = Field(pattern=CHECKSUM_PATTERN)
     byte_size: int = Field(ge=0)
     retrieved_at: datetime
-    registered_at: datetime | None = None
+    registered_at: datetime
     media_type: str = Field(min_length=1)
     schema_version: str = Field(min_length=1)
     license_id: str | None = None

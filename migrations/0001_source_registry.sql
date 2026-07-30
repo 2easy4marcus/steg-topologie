@@ -562,6 +562,10 @@ BEFORE UPDATE OF canonical_build_id, parent_area_id, source_id, artifact_id
 ON administrative_areas
 BEGIN
     SELECT CASE
+        WHEN NEW.canonical_build_id IS NOT OLD.canonical_build_id
+        THEN RAISE(ABORT, 'administrative_areas.canonical_build_id is immutable')
+    END;
+    SELECT CASE
         WHEN NOT EXISTS (
             SELECT 1 FROM canonical_builds
             WHERE canonical_build_id = NEW.canonical_build_id
@@ -632,6 +636,10 @@ END;
 CREATE TRIGGER guard_service_units_update_references
 BEFORE UPDATE OF canonical_build_id, source_id, artifact_id ON service_units
 BEGIN
+    SELECT CASE
+        WHEN NEW.canonical_build_id IS NOT OLD.canonical_build_id
+        THEN RAISE(ABORT, 'service_units.canonical_build_id is immutable')
+    END;
     SELECT CASE
         WHEN NOT EXISTS (
             SELECT 1 FROM canonical_builds
@@ -714,6 +722,10 @@ BEFORE UPDATE OF canonical_build_id, delegation_area_id, service_unit_id,
                  source_id, artifact_id
 ON locality_context
 BEGIN
+    SELECT CASE
+        WHEN NEW.canonical_build_id IS NOT OLD.canonical_build_id
+        THEN RAISE(ABORT, 'locality_context.canonical_build_id is immutable')
+    END;
     SELECT CASE
         WHEN NOT EXISTS (
             SELECT 1 FROM canonical_builds
@@ -835,6 +847,17 @@ WHEN EXISTS (
      )
 BEGIN
     SELECT RAISE(ABORT, 'dataset_sources.source_id is referenced');
+END;
+
+CREATE TRIGGER guard_dataset_sources_update_duplicate
+BEFORE UPDATE OF source_id ON dataset_sources
+WHEN NEW.source_id IS NOT OLD.source_id
+     AND EXISTS (
+         SELECT 1 FROM dataset_sources
+         WHERE source_id = NEW.source_id
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'dataset_sources row already exists');
 END;
 
 CREATE TRIGGER restrict_dataset_sources_primary_key_update
@@ -991,6 +1014,18 @@ BEGIN
     SELECT RAISE(ABORT, 'administrative_areas.area_id is referenced');
 END;
 
+CREATE TRIGGER guard_administrative_areas_update_duplicate
+BEFORE UPDATE OF area_id ON administrative_areas
+WHEN NEW.area_id IS NOT OLD.area_id
+     AND EXISTS (
+         SELECT 1 FROM administrative_areas
+         WHERE canonical_build_id = NEW.canonical_build_id
+           AND area_id = NEW.area_id
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'administrative_areas row already exists');
+END;
+
 CREATE TRIGGER restrict_administrative_areas_primary_key_update
 BEFORE UPDATE OF area_id ON administrative_areas
 WHEN NEW.area_id IS NOT OLD.area_id
@@ -1019,6 +1054,18 @@ WHEN EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'service_units.unit_id is referenced');
+END;
+
+CREATE TRIGGER guard_service_units_update_duplicate
+BEFORE UPDATE OF unit_id ON service_units
+WHEN NEW.unit_id IS NOT OLD.unit_id
+     AND EXISTS (
+         SELECT 1 FROM service_units
+         WHERE canonical_build_id = NEW.canonical_build_id
+           AND unit_id = NEW.unit_id
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'service_units row already exists');
 END;
 
 CREATE TRIGGER restrict_service_units_primary_key_update
@@ -1053,6 +1100,17 @@ WHEN EXISTS (
      )
 BEGIN
     SELECT RAISE(ABORT, 'canonical_builds.canonical_build_id is referenced');
+END;
+
+CREATE TRIGGER guard_canonical_builds_update_duplicate
+BEFORE UPDATE OF canonical_build_id ON canonical_builds
+WHEN NEW.canonical_build_id IS NOT OLD.canonical_build_id
+     AND EXISTS (
+         SELECT 1 FROM canonical_builds
+         WHERE canonical_build_id = NEW.canonical_build_id
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'canonical_builds row already exists');
 END;
 
 CREATE TRIGGER restrict_canonical_builds_primary_key_update
