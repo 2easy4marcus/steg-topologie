@@ -1,0 +1,55 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "hasc_2": "TN.SF.SM",
+        "deleg_id": 51.0,
+        "deleg_name": "صفاقس المدينة",
+        "gov_id": 34.0,
+        "gov_name_a": "صفاقس",
+        "gov_name_f": "Sfax",
+        "adm_id": "g34d51",
+        "deleg_na_1": "Sfax Médina"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.75, 34.72],
+            [10.79, 34.72],
+            [10.79, 34.76],
+            [10.75, 34.76],
+            [10.75, 34.72]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "hasc_2": "TN.KB.DN",
+        "deleg_id": 54.0,
+        "deleg_name": "دوز الشمالية",
+        "gov_id": 63.0,
+        "gov_name_a": "قبلي",
+        "gov_name_f": "Kebili",
+        "adm_id": "g63d54",
+        "deleg_na_1": "Douz Nord"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [9.0, 33.4],
+            [9.1, 33.4],
+            [9.1, 33.5],
+            [9.0, 33.5],
+            [9.0, 33.4]
+          ]
+        ]
+      }
+    }
+  ]
+}

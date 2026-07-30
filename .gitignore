@@ -12,3 +12,12 @@ server.log
 docs/tunisia-*.osm.pbf
 data/processed/
 .venv/
+
+# Raw source datasets in docs/data/ have unverified licenses and stay local
+# only; the manifest (sources.yaml) and its README are what gets committed.
+docs/data/*.geojson
+docs/data/*.json
+docs/data/*.xls
+docs/data/*.pdf
+!docs/data/sources.yaml
+!docs/data/README.md
