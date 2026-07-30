@@ -685,6 +685,38 @@ git commit -m "feat: add source registry migrations"
 - Test: `tests/test_canonical_geography.py`
 - Test: `tests/test_steg_units.py`
 
+> **Task 3 authoritative correction:** The older examples below that put
+> `checksum_sha256`, `relative_path`, `retrieved_at`, or `format` directly on
+> `DatasetSource` are illustrative only and must not be copied. The manifest
+> has two top-level collections:
+>
+> - `sources`: logical `DatasetSource` records containing source identity,
+>   ownership, publication/license policy, refresh policy, schema version, and
+>   acquisition description;
+> - `artifacts`: immutable `SourceArtifact` records containing `artifact_id`,
+>   `source_id`, relative path, checksum, byte size, retrieval timestamp,
+>   media type, artifact schema version, and optional artifact license.
+>
+> Registry validation resolves every artifact path beneath an explicit source
+> root and rejects absolute paths, `..` traversal, and symlink escapes. The
+> committed tests use synthetic fixtures. Real `docs/data` validation runs
+> only when `STEG_SOURCE_ROOT` is set; otherwise it reports a clean skip.
+>
+> Canonical import creates a `canonical_builds` row with status `building`,
+> writes administrative areas, service units, and locality context under that
+> `canonical_build_id`, validates the complete staged build, marks it
+> `completed`, then switches the singleton `canonical_state.active_build_id`
+> with one guarded statement. Failure marks only the new build `failed` and
+> leaves the previous active build untouched. All reads resolve through the
+> active build.
+>
+> Delegation identity uses normalized `adm_id` after validating uniqueness; it
+> never uses governorate-local `deleg_id` alone. Null Arabic names, duplicate
+> IDs, invalid geometry, and the GeoJSON/TopoJSON 272-versus-271 disagreement
+> are reported/quarantined explicitly. The importer designates one verified
+> artifact as canonical and records the reconciliation decision instead of
+> silently merging the two.
+
 - [ ] **Step 1: Write failing validation tests**
 
 ```python

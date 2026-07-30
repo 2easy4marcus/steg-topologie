@@ -313,6 +313,9 @@ class _Conn:
     def execute(self, sql, params=None):
         return _Result(self._client.execute(sql, list(params or [])))
 
+    def batch(self, statements):
+        return [_Result(result) for result in self._client.batch(statements)]
+
 
 # NOTE: there is deliberately no transaction helper here, and none should be
 # added. libsql_client 0.3.1's HTTP transport refuses interactive transactions
@@ -352,6 +355,9 @@ def init_db():
     with get_conn() as conn:
         for stmt in SCHEMA_STATEMENTS:
             conn.execute(stmt)
+    from . import migrations
+
+    migrations.apply_all()
 
 
 def get_model_build_public(build_id: str):

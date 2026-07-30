@@ -14,6 +14,7 @@ RUN pip install --requirement requirements.txt
 
 COPY --chown=app:app app ./app
 COPY --chown=app:app static ./static
+COPY --chown=app:app migrations ./migrations
 
 RUN mkdir /data \
     && chown app:app /data
