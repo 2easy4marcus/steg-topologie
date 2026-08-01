@@ -311,7 +311,17 @@ class _Conn:
         self._client = client
 
     def execute(self, sql, params=None):
-        return _Result(self._client.execute(sql, list(params or [])))
+        from time import perf_counter
+        from .request_metrics import record_db_call
+        started = perf_counter()
+        try:
+            result = _Result(self._client.execute(sql, list(params or [])))
+        except Exception:
+            record_db_call((perf_counter() - started) * 1000, failed=True)
+            raise
+        else:
+            record_db_call((perf_counter() - started) * 1000, failed=False)
+            return result
 
     def batch(self, statements):
         return [_Result(result) for result in self._client.batch(statements)]

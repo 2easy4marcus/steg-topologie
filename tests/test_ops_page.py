@@ -29,7 +29,13 @@ def test_ops_page_uses_only_public_status_endpoints_and_adaptive_polling():
 
     assert 'fetch("/api/status")' in html
     assert 'fetch("/api/status/ingestion")' in html
-    assert "/api/internal/" not in html
+    # The only protected endpoint the page may reference is the operator
+    # diagnostics summary, and only guarded by a session-held secret sent as a
+    # header -- never baked into the page.
+    assert "/api/internal/" not in html.replace(
+        "/api/internal/ops/summary", ""
+    )
+    assert "sessionStorage" in html
     assert "OPS_SECRET" not in html
     assert "X-Ops-Secret" not in html
     assert "5000" in html
