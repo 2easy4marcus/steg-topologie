@@ -12,6 +12,11 @@ from app import main
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_PATHS = {"/api/status", "/api/model-readiness", "/api/stats"}
+POSTMAN_PACKAGE = ROOT / "node_modules" / "openapi-to-postmanv2"
+
+
+def _postman_generator_available(node_path, package_path):
+    return node_path is not None and package_path.is_dir()
 
 
 def test_fastapi_default_documentation_is_disabled():
@@ -108,7 +113,10 @@ def test_public_openapi_export_matches_committed_artifact_from_any_cwd(tmp_path)
     assert list(json.loads(first)["paths"]) == sorted(PUBLIC_PATHS)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+@pytest.mark.skipif(
+    not _postman_generator_available(shutil.which("node"), POSTMAN_PACKAGE),
+    reason="Node.js or openapi-to-postmanv2 is not installed",
+)
 def test_postman_generation_matches_committed_artifacts(tmp_path):
     export_command = [
         sys.executable,
@@ -140,6 +148,23 @@ def test_postman_generation_matches_committed_artifacts(tmp_path):
         (tmp_path / relative).read_bytes() == contents
         for relative, contents in generated.items()
     )
+
+
+def test_postman_generator_availability_requires_node_and_package(tmp_path):
+    package = tmp_path / "openapi-to-postmanv2"
+
+    assert not _postman_generator_available(None, package)
+    assert not _postman_generator_available("/usr/bin/node", package)
+    package.mkdir()
+    assert _postman_generator_available("/usr/bin/node", package)
+
+
+def test_postman_generator_uses_cross_platform_package_api():
+    source = (ROOT / "scripts" / "generate_postman.mjs").read_text()
+
+    assert "node_modules/.bin" not in source
+    assert "createRequire" in source
+    assert 'require("openapi-to-postmanv2")' in source
 
 
 def test_generated_public_artifacts_are_safe():

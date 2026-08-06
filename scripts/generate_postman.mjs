@@ -1,21 +1,25 @@
-import {execFileSync} from "node:child_process";
 import fs from "node:fs";
+import {createRequire} from "node:module";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 
+const require = createRequire(import.meta.url);
+const converter = require("openapi-to-postmanv2");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = path.resolve(process.argv[2] || repoRoot);
-const input = path.join(outputRoot, "build/.postman-generated.json");
-execFileSync(
-  path.join(repoRoot, "node_modules/.bin/openapi2postmanv2"),
-  [
-    "-s", path.join(outputRoot, "build/openapi-public.json"),
-    "-o", input,
-    "-p",
-  ],
-  {stdio: "inherit"},
-);
-const generated = JSON.parse(fs.readFileSync(input, "utf8"));
+const generated = await new Promise((resolve, reject) => {
+  converter.convert(
+    {type: "file", data: path.join(outputRoot, "build/openapi-public.json")},
+    {},
+    (error, result) => {
+      if (error || !result.result) {
+        reject(error || new Error(result.reason));
+      } else {
+        resolve(result.output.find(({type}) => type === "collection").data);
+      }
+    },
+  );
+});
 
 function requests(items) {
   return items.flatMap((item) => item.request ? [item] : requests(item.item || []));
@@ -90,4 +94,3 @@ for (const [relative, value] of [
     `${JSON.stringify(value, null, 2)}\n`,
   );
 }
-fs.unlinkSync(input);
