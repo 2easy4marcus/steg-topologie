@@ -12,6 +12,8 @@ server.log
 docs/tunisia-*.osm.pbf
 data/processed/
 .venv/
+node_modules/
+build/.postman-generated.json
 
 # Raw source datasets in docs/data/ have unverified licenses and stay local
 # only; the manifest (sources.yaml) and its README are what gets committed.

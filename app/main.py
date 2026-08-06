@@ -50,7 +50,13 @@ from .request_metrics import (
     reset_db_metrics,
 )
 
-app = FastAPI(title="Tunisia Outage Tracker")
+app = FastAPI(
+    title="Tunisia Outage Tracker",
+    version="2.0.0",
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
@@ -530,9 +536,11 @@ def get_cooccurrences():
     return CooccurrencesResponse(edges=edges)
 
 
+from .api import docs as docs_api  # noqa: E402
 from .api import ops as ops_api  # noqa: E402
 
 app.include_router(ops_api.create_router(verify_ops_secret))
+docs_api.install(app, verify_ops_secret)
 
 
 # ------------------------------------------------------------ static site --

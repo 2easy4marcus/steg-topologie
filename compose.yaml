@@ -42,12 +42,31 @@ services:
     depends_on:
       app:
         condition: service_healthy
-    # These profile-only binds intentionally target future Postman artifacts.
-    # `docker compose config` does not require them; the smoke profile will need
-    # both files before it can run successfully.
     volumes:
       - type: bind
         source: postman/tunisia-outage-tracker.postman_collection.json
+        target: /etc/newman/collection.json
+        read_only: true
+      - type: bind
+        source: postman/environment.example.json
+        target: /etc/newman/environment.json
+        read_only: true
+    command:
+      - run
+      - /etc/newman/collection.json
+      - --environment
+      - /etc/newman/environment.json
+
+  newman-security:
+    profiles:
+      - smoke
+    image: postman/newman:alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: postman/tunisia-outage-tracker-security-smoke.postman_collection.json
         target: /etc/newman/collection.json
         read_only: true
       - type: bind

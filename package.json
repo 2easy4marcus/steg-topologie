@@ -1,0 +1,11 @@
+{
+  "name": "tunisia-outage-tracker-contracts",
+  "private": true,
+  "scripts": {
+    "export:openapi": "python3 scripts/export_openapi.py",
+    "generate:postman": "openapi2postmanv2 -s build/openapi-public.json -o build/.postman-generated.json -p && node scripts/generate_postman.mjs"
+  },
+  "devDependencies": {
+    "openapi-to-postmanv2": "5.0.0"
+  }
+}
