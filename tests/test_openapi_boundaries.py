@@ -1,8 +1,10 @@
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main
@@ -76,23 +78,68 @@ def test_internal_openapi_contains_internal_ops_routes(monkeypatch):
     assert all(path.startswith("/api/internal/") for path in schema["paths"])
 
 
-def test_public_openapi_export_is_deterministic():
-    output = ROOT / "build" / "openapi-public.json"
+def test_public_openapi_export_matches_committed_artifact_from_any_cwd(tmp_path):
+    output = tmp_path / "build" / "openapi-public.json"
     subprocess.run(
-        [sys.executable, "scripts/export_openapi.py"],
-        cwd=ROOT,
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "export_openapi.py"),
+            "--output-root",
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
         check=True,
     )
     first = output.read_bytes()
     subprocess.run(
-        [sys.executable, "scripts/export_openapi.py"],
-        cwd=ROOT,
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "export_openapi.py"),
+            "--output-root",
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
         check=True,
     )
 
     assert output.read_bytes() == first
+    assert first == (ROOT / "build" / "openapi-public.json").read_bytes()
     assert first.endswith(b"\n")
     assert list(json.loads(first)["paths"]) == sorted(PUBLIC_PATHS)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_postman_generation_matches_committed_artifacts(tmp_path):
+    export_command = [
+        sys.executable,
+        str(ROOT / "scripts" / "export_openapi.py"),
+        "--output-root",
+        str(tmp_path),
+    ]
+    postman_command = [
+        "node",
+        str(ROOT / "scripts" / "generate_postman.mjs"),
+        str(tmp_path),
+    ]
+
+    subprocess.run(export_command, cwd=tmp_path, check=True)
+    subprocess.run(postman_command, cwd=tmp_path, check=True)
+    generated = {}
+    for relative in (
+        "build/openapi-public.json",
+        "postman/tunisia-outage-tracker.postman_collection.json",
+        "postman/tunisia-outage-tracker-security-smoke.postman_collection.json",
+        "postman/environment.example.json",
+    ):
+        generated[relative] = (tmp_path / relative).read_bytes()
+        assert generated[relative] == (ROOT / relative).read_bytes()
+
+    subprocess.run(export_command, cwd=tmp_path, check=True)
+    subprocess.run(postman_command, cwd=tmp_path, check=True)
+    assert all(
+        (tmp_path / relative).read_bytes() == contents
+        for relative, contents in generated.items()
+    )
 
 
 def test_generated_public_artifacts_are_safe():
@@ -171,3 +218,12 @@ def test_postman_environment_and_generator_are_safe_and_locked():
     )
     assert "configured-ops-value" not in combined
     assert "local-ops-secret" not in combined
+
+
+def test_smoke_command_sequences_both_collections_with_failure_propagation():
+    package = json.loads((ROOT / "package.json").read_text())
+
+    assert package["scripts"]["smoke"] == (
+        "docker compose --profile smoke run --rm newman && "
+        "docker compose --profile smoke run --rm newman-security"
+    )

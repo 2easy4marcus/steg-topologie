@@ -1,6 +1,20 @@
+import {execFileSync} from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
 
-const input = "build/.postman-generated.json";
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const outputRoot = path.resolve(process.argv[2] || repoRoot);
+const input = path.join(outputRoot, "build/.postman-generated.json");
+execFileSync(
+  path.join(repoRoot, "node_modules/.bin/openapi2postmanv2"),
+  [
+    "-s", path.join(outputRoot, "build/openapi-public.json"),
+    "-o", input,
+    "-p",
+  ],
+  {stdio: "inherit"},
+);
 const generated = JSON.parse(fs.readFileSync(input, "utf8"));
 
 function requests(items) {
@@ -65,12 +79,15 @@ const environment = {
   ],
 };
 
-fs.mkdirSync("postman", {recursive: true});
-for (const [path, value] of [
+fs.mkdirSync(path.join(outputRoot, "postman"), {recursive: true});
+for (const [relative, value] of [
   ["postman/tunisia-outage-tracker.postman_collection.json", publicCollection],
   ["postman/tunisia-outage-tracker-security-smoke.postman_collection.json", securityCollection],
   ["postman/environment.example.json", environment],
 ]) {
-  fs.writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  fs.writeFileSync(
+    path.join(outputRoot, relative),
+    `${JSON.stringify(value, null, 2)}\n`,
+  );
 }
 fs.unlinkSync(input);
