@@ -344,6 +344,10 @@ def run_candidate_pilot(
     (see scripts/extract_sfax_topology.py). Everything else is measured from
     the pinned build -- geography through the build's canonical-build pin,
     independent dates from the build's own scoped observations.
+
+    `radius_km` stays overridable because recalibrating it is the pilot's
+    purpose, and the value used is stored on the run row: a scoring version
+    that does not determine the output is not an identity.
     """
     from .. import db
 
@@ -386,6 +390,7 @@ def run_candidate_pilot(
         source_snapshot_id=snapshot.snapshot_id,
         config_version=config.version,
         scoring_version=SCORING_VERSION,
+        radius_km=radius_km,
         status=result.status,
         created_at=created_at,
         completed_at=created_at,

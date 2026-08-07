@@ -97,6 +97,8 @@ def test_unsupported_relation_structures_are_quarantined_and_countable():
     assert quarantined == {
         "relation/200": "unsupported_relation_type",
         "relation/300": "nested_relation_member",
+        # Its only member is out-of-box way/30. Nothing may vanish untallied.
+        "relation/400": "no_resolvable_members",
     }
     assert {r.relation_id for r in snapshot.relations}.isdisjoint(quarantined)
 
@@ -135,6 +137,12 @@ def test_pbf_reader_emits_the_elements_the_pure_builder_expects(tmp_path):
         '    <tag k="power" v="line"/>\n'
         '    <tag k="voltage" v="30000"/>\n'
         '  </way>\n'
+        '  <relation id="100" version="1">\n'
+        '    <member type="way" ref="10" role=""/>\n'
+        '    <member type="node" ref="1" role=""/>\n'
+        '    <tag k="type" v="site"/>\n'
+        '    <tag k="site" v="power"/>\n'
+        '  </relation>\n'
         '</osm>\n',
         encoding="utf-8",
     )
@@ -146,6 +154,11 @@ def test_pbf_reader_emits_the_elements_the_pure_builder_expects(tmp_path):
     assert line.voltage == "30000"
     assert {node.node_id for node in snapshot.nodes} == {1, 2}
     assert [asset.asset_id for asset in snapshot.assets] == ["node/1"]
+    # osmium reports member types as 'n'/'w'/'r'; the adapter maps them to the
+    # full names build_snapshot resolves against. If that mapping regresses,
+    # no member id resolves and the relation lands in quarantine instead.
+    assert [r.member_ids for r in snapshot.relations] == [["way/10", "node/1"]]
+    assert snapshot.quarantined_relations == []
 
 
 def _manifest(tmp_path, checksum):

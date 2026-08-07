@@ -14,8 +14,12 @@
     "box, and must not survive a bounded extract.",
     "",
     "relation/200 is a power relation with an unsupported structure type;",
-    "relation/300 is a supported type whose member is another relation.",
-    "Both are quarantined explicitly rather than silently skipped."
+    "relation/300 is a supported type whose member is another relation;",
+    "relation/400's only member is out-of-box way/30, so nothing it names",
+    "is in the extract. All three are quarantined explicitly rather than",
+    "silently skipped -- a silent skip is indistinguishable from 'there was",
+    "nothing there', and it is also what a broken member-type mapping in",
+    "read_osm_elements would look like."
   ],
   "elements": [
     {"type": "node", "id": 1, "lat": 34.7400, "lon": 10.7600,
@@ -45,6 +49,9 @@
      "tags": {"type": "route", "route": "power"}},
     {"type": "relation", "id": 300,
      "members": [{"type": "relation", "ref": 100, "role": ""}],
+     "tags": {"type": "site", "site": "power"}},
+    {"type": "relation", "id": 400,
+     "members": [{"type": "way", "ref": 30, "role": ""}],
      "tags": {"type": "site", "site": "power"}}
   ]
 }

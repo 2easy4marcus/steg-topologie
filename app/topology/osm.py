@@ -242,6 +242,17 @@ def build_snapshot(elements, *, snapshot_id, bbox=SFAX_KERKENNAH_BBOX):
             if f"{member['type']}/{member['ref']}" in known
         ]
         if not member_ids:
+            # Nothing this relation names is in the extract. Usually it sits
+            # outside the bounding box; it is also what a broken member-type
+            # mapping in read_osm_elements looks like, and that must not be a
+            # silent skip -- a silent skip is indistinguishable from "there
+            # was nothing there".
+            quarantined.append(
+                QuarantinedRelation(
+                    relation_id=relation_id,
+                    reason_code="no_resolvable_members",
+                )
+            )
             continue
         relations.append(
             GridRelation(

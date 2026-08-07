@@ -1317,20 +1317,26 @@ def record_candidate_run(
     source_snapshot_id: str,
     config_version: str,
     scoring_version: str,
+    radius_km: float,
     status: str,
     created_at: str,
     completed_at: str | None = None,
     public_error_code: str | None = None,
 ) -> None:
-    """Private, experimental. No public route reads this table."""
+    """Private, experimental. No public route reads this table.
+
+    `radius_km` is required because a scoring version alone does not identify
+    the run: the radius is variable within a version, and the pilot exists to
+    vary it.
+    """
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO asset_candidate_runs(
                 run_id, cluster_run_id, build_id, source_snapshot_id,
-                config_version, scoring_version, status, created_at,
-                completed_at, public_error_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                config_version, scoring_version, radius_km, status,
+                created_at, completed_at, public_error_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 run_id,
@@ -1339,6 +1345,7 @@ def record_candidate_run(
                 source_snapshot_id,
                 config_version,
                 scoring_version,
+                radius_km,
                 status,
                 created_at,
                 completed_at,

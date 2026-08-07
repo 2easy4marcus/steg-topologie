@@ -18,8 +18,9 @@
 -- index, not a probability, and no public route reads either table (see
 -- tests/test_openapi_boundaries.py). Every row carries the four identities
 -- that produced it -- evidence build, cluster run, topology snapshot, and the
--- model-config plus scoring versions -- because a rank without them cannot be
--- compared against any other rank.
+-- model-config plus scoring versions -- plus the one scoring parameter a
+-- caller may vary within a scoring version, because a rank without them
+-- cannot be compared against any other rank.
 --
 -- PRAGMA foreign_keys is 0 on this deployment (see 0001_source_registry.sql),
 -- so parent-identity requirements are enforced with triggers. One of those
@@ -38,8 +39,42 @@ CREATE TABLE IF NOT EXISTS asset_candidate_runs (
     scoring_version TEXT NOT NULL CHECK (length(scoring_version) > 0),
     status TEXT NOT NULL
         CHECK (status IN ('experimental', 'insufficient_evidence', 'failed')),
-    created_at TEXT NOT NULL CHECK (length(created_at) > 0),
-    completed_at TEXT,
+    -- The candidate radius is stored, not just versioned. It is the single
+    -- most influential scoring parameter and the pilot exists to recalibrate
+    -- it, so two runs at 8km and 20km must not be indistinguishable here.
+    -- Bounded above as well as below because `> 0` alone admits infinity.
+    radius_km REAL NOT NULL CHECK (radius_km > 0 AND radius_km < 1e6),
+    created_at TEXT NOT NULL
+        CHECK (
+            created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]*'
+            AND datetime(created_at) IS NOT NULL
+            AND (
+            substr(created_at, -1) = 'Z'
+            OR (
+                substr(created_at, -6, 1) IN ('+', '-')
+                AND substr(created_at, -3, 1) = ':'
+                AND substr(created_at, -5, 2) GLOB '[0-9][0-9]'
+                AND substr(created_at, -2, 2) GLOB '[0-9][0-9]'
+            )
+            )
+        ),
+    completed_at TEXT
+        CHECK (
+            completed_at IS NULL
+            OR (
+            completed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T ][0-9][0-9]:[0-9][0-9]*'
+            AND datetime(completed_at) IS NOT NULL
+            AND (
+            substr(completed_at, -1) = 'Z'
+            OR (
+                substr(completed_at, -6, 1) IN ('+', '-')
+                AND substr(completed_at, -3, 1) = ':'
+                AND substr(completed_at, -5, 2) GLOB '[0-9][0-9]'
+                AND substr(completed_at, -2, 2) GLOB '[0-9][0-9]'
+            )
+            )
+            )
+        ),
     public_error_code TEXT
 );
 
@@ -55,8 +90,8 @@ CREATE TABLE IF NOT EXISTS asset_candidate_scores (
     asset_id TEXT NOT NULL CHECK (length(asset_id) > 0),
     rank INTEGER NOT NULL CHECK (rank >= 1),
     score REAL NOT NULL CHECK (score >= 0.0 AND score <= 1.0),
-    component_json TEXT NOT NULL CHECK (length(component_json) > 0),
-    sensitivity_json TEXT NOT NULL CHECK (length(sensitivity_json) > 0),
+    component_json TEXT NOT NULL CHECK (json_valid(component_json)),
+    sensitivity_json TEXT NOT NULL CHECK (json_valid(sensitivity_json)),
     PRIMARY KEY(run_id, cluster_id, asset_id)
 );
 

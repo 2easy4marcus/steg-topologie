@@ -371,6 +371,7 @@ def test_candidate_run_carries_every_identity_it_was_produced_under():
         source_snapshot_id=SNAPSHOT_ID,
         config_version=CONFIG.version,
         scoring_version=SCORING_VERSION,
+        radius_km=CANDIDATE_RADIUS_KM,
         status="experimental",
         created_at="2026-07-30T01:00:00Z",
         completed_at="2026-07-30T01:00:05Z",
@@ -382,6 +383,7 @@ def test_candidate_run_carries_every_identity_it_was_produced_under():
     assert row["source_snapshot_id"] == SNAPSHOT_ID
     assert row["config_version"] == CONFIG.version
     assert row["scoring_version"] == SCORING_VERSION
+    assert row["radius_km"] == CANDIDATE_RADIUS_KM
 
 
 @pytest.mark.parametrize(
@@ -399,6 +401,7 @@ def test_candidate_run_refuses_an_unknown_parent(overrides, message):
         "source_snapshot_id": SNAPSHOT_ID,
         "config_version": CONFIG.version,
         "scoring_version": SCORING_VERSION,
+        "radius_km": CANDIDATE_RADIUS_KM,
         "status": "experimental",
         "created_at": "2026-07-30T01:00:00Z",
     } | overrides
@@ -416,6 +419,7 @@ def test_scores_cannot_be_stored_against_an_insufficient_evidence_run():
         source_snapshot_id=SNAPSHOT_ID,
         config_version=CONFIG.version,
         scoring_version=SCORING_VERSION,
+        radius_km=CANDIDATE_RADIUS_KM,
         status="insufficient_evidence",
         created_at="2026-07-30T01:00:00Z",
     )
@@ -476,6 +480,25 @@ def test_pilot_persists_a_ranked_run_privately():
     assert rows[0]["sensitivity_json"] == '{"min_rank": 1, "max_rank": 1}'
     assert _run_row("cand-1")["completed_at"] == "2026-07-30T01:00:00Z"
     assert _run_row("cand-1")["source_snapshot_id"] == SNAPSHOT_ID
+
+
+def test_pilot_stores_the_radius_it_actually_scored_with():
+    # The scoring version alone would make an 8km run and a 20km run
+    # indistinguishable, and recalibrating the radius is the pilot's purpose.
+    run_id, build_id = _pilot_stack()
+
+    run_candidate_pilot(
+        "cand-1",
+        cluster_run_id=run_id,
+        cluster_id=0,
+        build_id=build_id,
+        snapshot=_pilot_snapshot(),
+        source_registered=True,
+        created_at="2026-07-30T01:00:00Z",
+        radius_km=20.0,
+    )
+
+    assert _run_row("cand-1")["radius_km"] == 20.0
 
 
 def test_pilot_refuses_an_unregistered_topology_source():
