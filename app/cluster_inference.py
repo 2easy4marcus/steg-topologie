@@ -19,15 +19,24 @@ import community as community_louvain
 from . import db
 from . import geocoding
 from . import model_readiness, observability
+from .model.config import CONFIG
+from .model.graph import build_graph_for_build
 
-MIN_NOTICES = 30
-MIN_LOCALITIES = 10
+MIN_NOTICES = CONFIG.min_valid_notices
+MIN_LOCALITIES = CONFIG.min_localities
 STABILITY_LOOKBACK_DAYS = 7
-ALGORITHM_VERSION = "ppmi-louvain-v1"
+ALGORITHM_VERSION = "evidence-weighted-louvain-v2"
 
 
 def build_ppmi_graph(cooccurrences: list, total_notices: int) -> nx.Graph:
-    """cooccurrences: rows with locality_a, locality_b, notice_count.
+    """Compatibility facade for the V1 unscoped PPMI graph.
+
+    Deliberately NOT a wrapper around build_weighted_graph: legacy rows carry
+    only locality_a/locality_b/notice_count, so routing them through V2 would
+    mean inventing the confidence components V2 requires. V2 callers use
+    model.graph.build_graph_for_build instead.
+
+    cooccurrences: rows with locality_a, locality_b, notice_count.
     Edge weight = positive PMI (negatives clipped to 0, Louvain needs
     non-negative weights). P(a) is the true fraction of all notices that
     mention locality a (db.get_locality_notice_counts()), matching the
@@ -133,11 +142,10 @@ def run_recluster() -> dict:
 
     geocoding.geocode_all_pending()
 
-    notices_so_far = db.total_notice_count()
-    cooccurrences = db.build_cooccurrences(build_id)
-    G = build_ppmi_graph(cooccurrences, total_notices=notices_so_far)
-    for name in db.build_locality_counts(build_id):
-        G.add_node(name)
+    # Marginals and N come from this build's pinned snapshot, not from the
+    # global notice/locality counters, so the graph cannot mix one build's
+    # pairs with another build's totals.
+    G = build_graph_for_build(build_id)
 
     partition = compute_clusters(G)
     stability = compute_stability(run_date, partition)

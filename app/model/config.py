@@ -23,6 +23,13 @@ Rationale for the v2.0 values:
 - ``min_edge_distinct_dates`` 2 -- a pair seen on a single outage date is one
   event, not a repeated relationship, so it stays visible diagnostically but
   cannot become a clustering edge.
+- ``recurrence_saturation_dates`` 3 -- the date on which repeated confirmation
+  stops adding weight. Distinct from the gate above: the gate decides whether
+  an edge exists at all, this only shapes how fast confidence saturates.
+- ``max_geographic_bonus`` 0.15 -- ceiling on the confirmation bonus for two
+  localities sharing a service unit. Geography can only scale an edge outage
+  evidence already justified; it never creates one. A pair whose geography was
+  never measured gets zero bonus rather than an assumed agreement.
 """
 
 from pydantic import BaseModel
@@ -51,8 +58,10 @@ class ModelConfig(BaseModel):
     recent_parse_window_days: int = 30
     max_scrape_age_hours: int = 48
 
-    # Graph gates (consumed when model edges are built).
+    # Graph gates and weights.
     min_edge_distinct_dates: int = 2
+    recurrence_saturation_dates: int = 3
+    max_geographic_bonus: float = 0.15
 
 
 CONFIG = ModelConfig()

@@ -1273,6 +1273,32 @@ def operational_health_metrics(cutoff: str):
     }
 
 
+def build_edge_evidence(build_id: str) -> list:
+    """Per-pair graph inputs, averaged from the build's scoped observations.
+
+    geographic_confidence stays NULL until canonical geography is pinned to a
+    build; the graph reads NULL as "unmeasured" and applies no bonus.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT locality_a, locality_b,
+                   COUNT(DISTINCT notice_id) AS notice_count,
+                   COUNT(DISTINCT outage_date) AS distinct_date_count,
+                   AVG(parse_confidence) AS mean_parse_confidence,
+                   AVG(scope_confidence) AS mean_scope_confidence,
+                   AVG(canonicalization_confidence)
+                       AS mean_canonicalization_confidence,
+                   AVG(geographic_confidence) AS geographic_confidence
+            FROM build_pair_observations
+            WHERE build_id = ?
+            GROUP BY locality_a, locality_b
+            ORDER BY locality_a, locality_b
+            """,
+            [build_id],
+        ).fetchall()
+
+
 def edge_evidence(
     build_id: str, locality_a: str, locality_b: str
 ):
@@ -1287,26 +1313,27 @@ def edge_evidence(
         ).fetchone()
         if edge is None:
             return None
+        # Provenance comes from the build's own scoped observations, not from
+        # live notice state. A notice that merely mentions both localities in
+        # different table cells is not evidence for this edge, and a parser
+        # activation after the build must not change what an already-pinned
+        # build claims to have seen.
         rows = conn.execute(
             """
-            SELECT DISTINCT np.notice_id, np.title, np.notice_date_iso,
-                   nsnap.source_url, nla.subregion_name
-            FROM notice_state state
-            JOIN notice_parses np ON np.parse_id = state.active_parse_id
+            SELECT bpo.notice_id, np.title, bpo.outage_date AS notice_date_iso,
+                   nsnap.source_url, bpo.scope_name AS subregion_name
+            FROM build_pair_observations bpo
+            JOIN build_notice_parses bnp
+              ON bnp.build_id = bpo.build_id
+             AND bnp.notice_id = bpo.notice_id
+            JOIN notice_parses np ON np.parse_id = bnp.parse_id
             JOIN notice_snapshots nsnap
               ON nsnap.snapshot_id = np.snapshot_id
-            JOIN notice_localities nla ON nla.parse_id = np.parse_id
-            WHERE EXISTS (
-                SELECT 1 FROM notice_localities x
-                WHERE x.parse_id = np.parse_id AND x.canonical_name = ?
-            )
-              AND EXISTS (
-                SELECT 1 FROM notice_localities y
-                WHERE y.parse_id = np.parse_id AND y.canonical_name = ?
-            )
-            ORDER BY np.notice_date_iso DESC, np.notice_id DESC
+            WHERE bpo.build_id = ?
+              AND bpo.locality_a = ? AND bpo.locality_b = ?
+            ORDER BY bpo.outage_date DESC, bpo.notice_id DESC
             """,
-            [a, b],
+            [build_id, a, b],
         ).fetchall()
 
     notices = {}
