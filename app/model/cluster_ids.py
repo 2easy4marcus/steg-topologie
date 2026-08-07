@@ -10,11 +10,24 @@ cluster whose only good partner was already claimed, so it is not used.
 Lineage keeps every eligible predecessor relationship, not only the matched
 one, because a split or merge is exactly the case where the single inherited
 id loses information.
+
+A note on why the matching is maximum-weight rather than greedy, since at the
+default threshold the difference is invisible. Clusters within one run are
+disjoint, so two eligible edges sharing an endpoint can both clear a 0.50
+threshold only by being exactly 0.50 each -- a brute-force search over small
+universes finds no case where they differ. Above 0.50, therefore, matching
+buys one-to-one enforcement and deterministic tie-breaking, not a better
+total. But `min_id_inheritance_jaccard` is configuration: lower it and strict
+divergence returns immediately (at 0.30 a greedy pass strands a cluster whose
+only candidate was already claimed). The matcher stays optimal so the
+threshold remains a free knob.
 """
 
 from dataclasses import dataclass
 
 import networkx as nx
+
+from .config import CONFIG
 
 # Jaccard is compared as an integer numerator over this denominator.
 # networkx documents that float weights may return a slightly suboptimal
@@ -53,7 +66,7 @@ def _role(new_id, old_id, inherited, eligible_by_new, eligible_by_old):
     return "related"
 
 
-def match_cluster_ids(previous, current, *, next_id, threshold=0.50):
+def match_cluster_ids(previous, current, *, next_id, threshold=None):
     """Assign each current cluster a stable id.
 
     `next_id` must come from the persistent allocator (db.reserve_cluster_ids),
@@ -62,6 +75,8 @@ def match_cluster_ids(previous, current, *, next_id, threshold=0.50):
     used. Reserve `len(current)` ids up front; unused reservations are burned,
     which is what "never reused" requires.
     """
+    if threshold is None:
+        threshold = CONFIG.min_id_inheritance_jaccard
     graph = nx.Graph()
     overlaps = {}
     eligible_by_new = {}

@@ -19,8 +19,10 @@ import community as community_louvain
 from . import db
 from . import geocoding
 from . import model_readiness, observability
+from .model.cluster_ids import match_cluster_ids
 from .model.config import CONFIG
 from .model.graph import build_graph_for_build
+from .model.validation import validate_cluster_run
 
 MIN_NOTICES = CONFIG.min_total_notices
 MIN_LOCALITIES = CONFIG.min_localities
@@ -102,6 +104,28 @@ def compute_stability(run_date: str, cluster_assignment: dict) -> dict:
     return stability
 
 
+def _memberships(partition: dict) -> dict:
+    """{cluster_id: {locality, ...}} from a {locality: cluster_id} partition."""
+    memberships: dict = {}
+    for locality, cluster_id in partition.items():
+        memberships.setdefault(cluster_id, set()).add(locality)
+    return memberships
+
+
+def _lineage_rows(match) -> list:
+    """Flatten the matcher's lineage into rows, under the final stable ids."""
+    return [
+        {
+            "cluster_id": match.ids[new_id],
+            "previous_cluster_id": row.previous_id,
+            "jaccard_similarity": row.similarity,
+            "role": row.role,
+        }
+        for new_id, rows in sorted(match.lineage.items())
+        for row in rows
+    ]
+
+
 def run_recluster() -> dict:
     """Full daily job: check data floor, geocode pending localities, build
     the PPMI graph, cluster, score stability, persist. Returns a summary
@@ -147,14 +171,33 @@ def run_recluster() -> dict:
     # pairs with another build's totals.
     G = build_graph_for_build(build_id)
 
-    partition = compute_clusters(G)
+    raw_partition = compute_clusters(G)
+
+    # Louvain's community integers are arbitrary per run, so a cluster's
+    # identity is re-established by matching this run's memberships against
+    # the previous active run's. Ids for unmatched clusters come from the
+    # persistent allocator; len(current) is the safe upper bound and any
+    # reservation left unused is burned rather than returned.
+    previous_run_id = db.active_cluster_run_id()
+    previous = (
+        db.cluster_run_memberships(previous_run_id) if previous_run_id else {}
+    )
+    current = _memberships(raw_partition)
+    match = match_cluster_ids(
+        previous, current, next_id=db.reserve_cluster_ids(len(current))
+    )
+    partition = {
+        locality: match.ids[raw_id] for locality, raw_id in raw_partition.items()
+    }
     stability = compute_stability(run_date, partition)
+
     run_id = uuid4().hex
     db.create_cluster_run(
         run_id,
         build_id,
         ALGORITHM_VERSION,
         datetime.now(timezone.utc).isoformat(),
+        config_version=CONFIG.version,
     )
     observability.record_job_event(
         run_id,
@@ -168,13 +211,58 @@ def run_recluster() -> dict:
         len(set(partition.values())),
         len(partition),
     )
-    db.activate_completed_cluster_run(run_id)
+
+    lineage_rows = _lineage_rows(match)
+    if previous_run_id:
+        db.write_cluster_lineage(run_id, previous_run_id, lineage_rows)
+
+    report = validate_cluster_run(build_id, algorithm_version=ALGORITHM_VERSION)
+    db.record_validation_run(
+        run_id,
+        report,
+        status="completed",
+        evaluated_at=datetime.now(timezone.utc).isoformat(),
+        split_count=sum(1 for row in lineage_rows if row["role"] == "split"),
+        merge_count=sum(1 for row in lineage_rows if row["role"] == "merged"),
+    )
+    observability.record_job_event(
+        run_id,
+        "cluster_validated",
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    # Activation reads this decision, so it has to be stored first. Readiness
+    # was already checked above; a run that got this far has a completed
+    # validation run for the active build.
+    db.record_publication_decision(
+        "cluster_run",
+        run_id,
+        build_id=build_id,
+        decision="published",
+        config_version=CONFIG.version,
+        decided_at=datetime.now(timezone.utc).isoformat(),
+    )
+    try:
+        db.activate_completed_cluster_run(run_id)
+    except ValueError:
+        # A refused activation must not be invisible: the completed run stays
+        # in the table and the previous run stays active, so without a
+        # breadcrumb the only symptom is a map that quietly stops advancing.
+        observability.record_job_event(
+            run_id,
+            "cluster_activation_refused",
+            occurred_at=datetime.now(timezone.utc).isoformat(),
+        )
+        raise
     observability.record_job_event(
         run_id,
         "cluster_activated",
         occurred_at=datetime.now(timezone.utc).isoformat(),
     )
-    # Preserve legacy stability history while cluster consumers migrate.
+    # Preserve legacy stability history while cluster consumers migrate. This
+    # must carry the SAME remapped ids: /api/model-status derives its cluster
+    # count from the legacy table, and remapping only one of the two writes
+    # would make the public count disagree with the map.
     db.write_cluster_run(run_date, partition, stability)
 
     return {

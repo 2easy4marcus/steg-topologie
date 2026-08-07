@@ -153,7 +153,12 @@ def test_report_persists_against_its_run_and_is_readable():
     db.create_cluster_run("run-1", build_id, "algo-v2", "2026-07-30T00:00:00Z")
     report = validate_cluster_run(build_id, algorithm_version="algo-v2")
 
-    db.record_validation_run("run-1", report, status="completed")
+    db.record_validation_run(
+        "run-1",
+        report,
+        status="completed",
+        evaluated_at="2026-07-30T00:05:00Z",
+    )
     stored = db.validation_run("run-1")
 
     assert stored["status"] == "completed"
@@ -168,4 +173,9 @@ def test_validation_run_rejects_an_unknown_status():
     report = validate_cluster_run(build_id, algorithm_version="algo-v2")
 
     with pytest.raises(Exception):
-        db.record_validation_run("run-1", report, status="probably-fine")
+        db.record_validation_run(
+            "run-1",
+            report,
+            status="probably-fine",
+            evaluated_at="2026-07-30T00:05:00Z",
+        )

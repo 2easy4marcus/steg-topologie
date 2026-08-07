@@ -47,7 +47,9 @@ from pydantic import BaseModel, Field
 
 
 class ModelConfig(BaseModel):
-    version: str = "evidence-v2.0"
+    # v2.1 added the graph weight knobs, the legacy data floor, and the
+    # cluster identity/validation settings below.
+    version: str = "evidence-v2.1"
 
     # Scope and parse confidence components.
     subregion_scope_confidence: float = 1.0

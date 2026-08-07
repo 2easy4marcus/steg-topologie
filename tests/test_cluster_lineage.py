@@ -31,22 +31,45 @@ def test_similarity_below_half_allocates_new_id():
 
 
 def test_globally_optimal_matching_beats_greedy_first_match():
-    # Greedy over sorted new ids gives cluster 0 its best partner (X, 0.6) and
-    # leaves cluster 1 nothing, total 0.6. The optimal one-to-one assignment
-    # pairs 0->Y and 1->X for 0.5 + 1.0 = 1.5.
-    previous = {
-        10: {"a", "b", "c", "d", "e"},          # X
-        11: {"p", "q"},                         # Y
-    }
-    current = {
-        0: {"a", "b", "c", "p", "q"},
-        1: {"a", "b", "c", "d", "e"},
-    }
+    # Similarities: (0,10)=0.40  (0,11)=0.33  (1,10)=0.50  (1,11)=0.
+    # Greedy over sorted new ids hands 10 to cluster 0 because 0.40 is 0's
+    # best, stranding cluster 1 whose only candidate was 10 -- total 0.40.
+    # The optimal one-to-one assignment is 0->11 and 1->10, total 0.83.
+    #
+    # This needs a threshold below the 0.50 default to be reachable at all;
+    # see test_contention_above_the_default_threshold_is_always_a_tie.
+    previous = {10: {"a", "b", "c", "d"}, 11: {"p"}}
+    current = {0: {"a", "b", "p"}, 1: {"c", "d"}}
+
+    result = match_cluster_ids(previous, current, next_id=99, threshold=0.30)
+
+    assert result.ids == {0: 11, 1: 10}
+
+
+def test_contention_above_the_default_threshold_is_always_a_tie():
+    # Clusters within a run are disjoint, so two eligible edges sharing an
+    # endpoint can only both clear a 0.50 threshold by being exactly 0.50
+    # each. Above the default, therefore, matching's job is one-to-one
+    # enforcement and deterministic tie-breaking, not weight maximisation --
+    # but the moment min_id_inheritance_jaccard is lowered, strict divergence
+    # returns, which is why the matcher stays maximum-weight.
+    previous = {10: {"a", "b", "c", "d"}, 11: {"p"}}
+    current = {0: {"a", "b", "p"}, 1: {"c", "d"}}
+
+    result = match_cluster_ids(previous, current, next_id=99, threshold=0.50)
+
+    assert result.ids == {0: 99, 1: 10}
+
+
+def test_a_contested_predecessor_is_inherited_by_exactly_one_cluster():
+    # A cluster that split cleanly in half: both children tie at 0.50 for the
+    # parent id, and only one may take it.
+    previous = {10: {"a", "b", "c", "d"}}
+    current = {0: {"a", "b"}, 1: {"c", "d"}}
 
     result = match_cluster_ids(previous, current, next_id=99)
 
-    assert result.ids[1] == 10
-    assert result.ids[0] == 11
+    assert sorted(result.ids.values()) == [10, 99]
 
 
 def test_matching_is_deterministic_under_exact_ties():
@@ -206,6 +229,110 @@ def test_lineage_requires_an_existing_run():
                 }
             ],
         )
+
+
+# --- activation guard ------------------------------------------------------
+
+
+def _completed_run_on_active_build():
+    db.create_model_build("build-1", "2026-07-26T10:00:00Z")
+    db.complete_model_build("build-1", "2026-07-26T10:01:00Z", 1, 1, 0)
+    db.activate_completed_model_build("build-1")
+    db.create_cluster_run(
+        "run-1", "build-1", "algo-v2", "2026-07-26T10:02:00Z"
+    )
+    db.write_cluster_members("run-1", {"A": 0}, {"A": 0.0})
+    db.complete_cluster_run("run-1", "2026-07-26T10:03:00Z", 1, 1)
+
+
+def _stored_validation(status="completed"):
+    from app.model.config import CONFIG
+    from app.model.validation import ValidationReport
+
+    db.record_validation_run(
+        "run-1",
+        ValidationReport(
+            build_id="build-1",
+            config_version=CONFIG.version,
+            algorithm_version="algo-v2",
+            validation_version=CONFIG.validation_version,
+            random_seed=CONFIG.random_seed,
+            bootstrap_runs=0,
+            mean_membership_agreement=1.0,
+        ),
+        status=status,
+        evaluated_at="2026-07-26T10:03:30Z",
+    )
+
+
+def _published():
+    from app.model.config import CONFIG
+
+    db.record_publication_decision(
+        "cluster_run",
+        "run-1",
+        build_id="build-1",
+        decision="published",
+        config_version=CONFIG.version,
+        decided_at="2026-07-26T10:03:40Z",
+    )
+
+
+def test_activation_refuses_a_run_with_no_validation():
+    _completed_run_on_active_build()
+    _published()
+
+    with pytest.raises(ValueError, match="completed validation run"):
+        db.activate_completed_cluster_run("run-1")
+    assert db.active_cluster_run_id() is None
+
+
+def test_activation_refuses_a_run_whose_validation_failed():
+    _completed_run_on_active_build()
+    _stored_validation(status="failed")
+    _published()
+
+    with pytest.raises(ValueError, match="completed validation run"):
+        db.activate_completed_cluster_run("run-1")
+    assert db.active_cluster_run_id() is None
+
+
+def test_activation_refuses_an_unpublished_run():
+    _completed_run_on_active_build()
+    _stored_validation()
+
+    with pytest.raises(ValueError, match="not published"):
+        db.activate_completed_cluster_run("run-1")
+    assert db.active_cluster_run_id() is None
+
+
+def test_activation_refuses_a_blocked_decision():
+    from app.model.config import CONFIG
+
+    _completed_run_on_active_build()
+    _stored_validation()
+    db.record_publication_decision(
+        "cluster_run",
+        "run-1",
+        build_id="build-1",
+        decision="blocked",
+        config_version=CONFIG.version,
+        decided_at="2026-07-26T10:03:40Z",
+    )
+
+    with pytest.raises(ValueError, match="not published"):
+        db.activate_completed_cluster_run("run-1")
+    assert db.active_cluster_run_id() is None
+
+
+def test_activation_succeeds_once_validated_and_published():
+    _completed_run_on_active_build()
+    _stored_validation()
+    _published()
+
+    db.activate_completed_cluster_run("run-1")
+
+    assert db.active_cluster_run_id() == "run-1"
 
 
 def test_cluster_run_memberships_reads_a_run_by_id():
