@@ -32,7 +32,7 @@ Rationale for the v2.0 values:
   never measured gets zero bonus rather than an assumed agreement.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ModelConfig(BaseModel):
@@ -44,6 +44,11 @@ class ModelConfig(BaseModel):
     ok_parse_confidence: float = 1.0
     warning_parse_confidence: float = 0.7
     canonicalization_confidence: float = 1.0
+
+    # Legacy data floor shown on /api/model-status. Deliberately separate from
+    # min_valid_notices: this counts notices carrying any locality, that one
+    # counts notices producing at least one scoped pair.
+    min_total_notices: int = 30
 
     # Model-quality gates.
     min_valid_notices: int = 30
@@ -58,10 +63,12 @@ class ModelConfig(BaseModel):
     recent_parse_window_days: int = 30
     max_scrape_age_hours: int = 48
 
-    # Graph gates and weights.
-    min_edge_distinct_dates: int = 2
-    recurrence_saturation_dates: int = 3
-    max_geographic_bonus: float = 0.15
+    # Graph gates and weights. Bounded: recurrence_saturation_dates is a
+    # divisor, and a negative geographic bonus would hand Louvain a negative
+    # weight.
+    min_edge_distinct_dates: int = Field(default=2, ge=0)
+    recurrence_saturation_dates: int = Field(default=3, gt=0)
+    max_geographic_bonus: float = Field(default=0.15, ge=0)
 
 
 CONFIG = ModelConfig()

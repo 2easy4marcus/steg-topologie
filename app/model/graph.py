@@ -41,7 +41,9 @@ class EdgeEvidence(BaseModel):
     distinct_date_count: int = Field(ge=0)
     mean_parse_confidence: float = Field(ge=0, le=1)
     mean_scope_confidence: float = Field(ge=0, le=1)
-    mean_canonicalization_confidence: float = Field(default=1.0, ge=0, le=1)
+    # No default: the column is NOT NULL, so a caller that cannot supply this
+    # has no measurement, and assuming 1.0 would fabricate one.
+    mean_canonicalization_confidence: float = Field(ge=0, le=1)
     # None means geography was never joined for this pair. Distinct from 0.0,
     # which would mean "measured, and the localities disagree".
     geographic_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -79,7 +81,7 @@ def build_weighted_graph(
         # rather than vanishing from the model.
         for locality in (edge.locality_a, edge.locality_b):
             if locality not in graph:
-                graph.add_node(locality, gated_pairs=0)
+                graph.add_node(locality, gated_pairs=0, unweighted_pairs=0)
 
         count_a = _marginal(locality_counts, edge.locality_a, total_notices)
         count_b = _marginal(locality_counts, edge.locality_b, total_notices)
@@ -101,8 +103,6 @@ def build_weighted_graph(
         p_a = count_a / total_notices
         p_b = count_b / total_notices
         ppmi = max(0.0, math.log(p_ab / (p_a * p_b)))
-        if ppmi == 0:
-            continue
 
         temporal = min(
             1.0, edge.distinct_date_count / config.recurrence_saturation_dates
@@ -116,11 +116,22 @@ def build_weighted_graph(
         geographic_bonus = config.max_geographic_bonus * (
             edge.geographic_confidence or 0.0
         )
+        weight = ppmi * reliability * (1 + geographic_bonus)
+
+        if weight <= 0:
+            # No usable evidence: either the pair is no more likely than
+            # chance (PPMI 0) or a confidence component is 0. A zero-weight
+            # edge is not a relationship, and Louvain divides by total graph
+            # weight, so a graph of them raises ZeroDivisionError. Keep the
+            # nodes and count the drop so it stays diagnosable.
+            graph.nodes[edge.locality_a]["unweighted_pairs"] += 1
+            graph.nodes[edge.locality_b]["unweighted_pairs"] += 1
+            continue
 
         graph.add_edge(
             edge.locality_a,
             edge.locality_b,
-            weight=ppmi * reliability * (1 + geographic_bonus),
+            weight=weight,
             ppmi=ppmi,
             reliability=reliability,
             parse_confidence=edge.mean_parse_confidence,
@@ -155,7 +166,7 @@ def build_graph_for_build(build_id: str, *, config=CONFIG) -> nx.Graph:
     # Localities with no pair at all still belong to the model.
     for locality in locality_counts:
         if locality not in graph:
-            graph.add_node(locality, gated_pairs=0)
+            graph.add_node(locality, gated_pairs=0, unweighted_pairs=0)
 
     graph.graph.update(
         build_id=build_id,

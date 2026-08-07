@@ -22,7 +22,7 @@ from . import model_readiness, observability
 from .model.config import CONFIG
 from .model.graph import build_graph_for_build
 
-MIN_NOTICES = CONFIG.min_valid_notices
+MIN_NOTICES = CONFIG.min_total_notices
 MIN_LOCALITIES = CONFIG.min_localities
 STABILITY_LOOKBACK_DAYS = 7
 ALGORITHM_VERSION = "evidence-weighted-louvain-v2"

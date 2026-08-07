@@ -107,6 +107,26 @@ def test_undated_pair_cannot_become_an_edge():
     assert not graph.has_edge("A", "B")
 
 
+def test_zero_reliability_pair_is_not_an_edge():
+    # A zero-weight edge is not a relationship, and Louvain divides by total
+    # graph weight -- a graph of them would raise ZeroDivisionError.
+    graph = _graph([_edge(mean_scope_confidence=0.0)])
+
+    assert not graph.has_edge("A", "B")
+    assert graph.nodes["A"]["unweighted_pairs"] == 1
+
+
+def test_all_zero_reliability_graph_still_clusters():
+    from app.cluster_inference import compute_clusters
+
+    graph = _graph(
+        [_edge(mean_scope_confidence=0.0)],
+        locality_counts={"A": 4, "B": 5},
+    )
+
+    assert compute_clusters(graph) == {"A": 0, "B": 1}
+
+
 def test_zero_ppmi_pair_keeps_its_nodes():
     # p_ab == p_a * p_b exactly -> PMI 0 -> no edge, but the localities must
     # still be clusterable as singletons.
@@ -184,6 +204,32 @@ def test_build_graph_for_build_ignores_other_builds():
     assert set(second.nodes()) == {"A", "B", "C", "D", "E", "F"}
     assert first.graph["total_notices"] == 4
     assert second.graph["total_notices"] == 6
+
+
+def test_confidence_average_is_per_notice_not_per_observation_row():
+    # n1 is a warning parse contributing the pair from four cells; n2 and n3
+    # are clean parses contributing it once each. A flat average over rows
+    # would weight n1 four times and drag the edge down.
+    _active_notice(
+        "n1",
+        [
+            item
+            for ordinal in range(4)
+            for item in (("A", SFAX, ordinal), ("B", SFAX, ordinal))
+        ],
+        "2026-07-20",
+        parse_status="warning",
+    )
+    _active_notice("n2", [("A", SFAX), ("B", SFAX)], "2026-07-21")
+    _active_notice("n3", [("A", SFAX), ("B", SFAX)], "2026-07-22")
+    build_id = evidence_pipeline.build_model_evidence(
+        created_at="2026-07-30T00:00:00Z"
+    )
+
+    row = db.build_edge_evidence(build_id)[0]
+
+    assert row["notice_count"] == 3
+    assert row["mean_parse_confidence"] == pytest.approx((0.7 + 1.0 + 1.0) / 3)
 
 
 def test_build_edge_evidence_averages_confidence_components():

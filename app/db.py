@@ -1276,22 +1276,38 @@ def operational_health_metrics(cutoff: str):
 def build_edge_evidence(build_id: str) -> list:
     """Per-pair graph inputs, averaged from the build's scoped observations.
 
+    Averaging is two-level -- within a notice, then across notices -- because
+    one notice can contribute the same pair from several table cells. A flat
+    average over observation rows would weight that notice by its cell count
+    and let one wide table pull an edge's reliability down, which is the same
+    largest-notice influence readiness is required to exclude.
+
     geographic_confidence stays NULL until canonical geography is pinned to a
     build; the graph reads NULL as "unmeasured" and applies no bonus.
     """
     with get_conn() as conn:
         return conn.execute(
             """
+            WITH per_notice AS (
+                SELECT locality_a, locality_b, notice_id, outage_date,
+                       AVG(parse_confidence) AS parse_confidence,
+                       AVG(scope_confidence) AS scope_confidence,
+                       AVG(canonicalization_confidence)
+                           AS canonicalization_confidence,
+                       AVG(geographic_confidence) AS geographic_confidence
+                FROM build_pair_observations
+                WHERE build_id = ?
+                GROUP BY locality_a, locality_b, notice_id, outage_date
+            )
             SELECT locality_a, locality_b,
-                   COUNT(DISTINCT notice_id) AS notice_count,
+                   COUNT(*) AS notice_count,
                    COUNT(DISTINCT outage_date) AS distinct_date_count,
                    AVG(parse_confidence) AS mean_parse_confidence,
                    AVG(scope_confidence) AS mean_scope_confidence,
                    AVG(canonicalization_confidence)
                        AS mean_canonicalization_confidence,
                    AVG(geographic_confidence) AS geographic_confidence
-            FROM build_pair_observations
-            WHERE build_id = ?
+            FROM per_notice
             GROUP BY locality_a, locality_b
             ORDER BY locality_a, locality_b
             """,
