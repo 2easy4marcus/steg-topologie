@@ -9,7 +9,9 @@ from app.model.validation import (
     temporal_split,
     validate_cluster_run,
 )
+from app.model.graph import build_graph_for_build
 from tests.test_model_builds import _active_notice
+from tests.test_private_candidates import _canonical_geography
 
 SFAX = "جهة صفاقس"
 
@@ -179,3 +181,97 @@ def test_validation_run_rejects_an_unknown_status():
             status="probably-fine",
             evaluated_at="2026-07-30T00:05:00Z",
         )
+
+
+# --- validation scores the graph production serves --------------------------
+#
+# Validation used to rebuild its own graph from the raw observation rows.
+# That parallel builder drifted from production in three ways, so every score
+# it reported described a model that was never served. It now goes through
+# build_graph_for_build like production does; these lock the three.
+
+
+def test_marginals_count_localities_seen_only_in_single_locality_scopes():
+    # E shares a notice with nobody, so it produces no pair row at all.
+    _active_notice("ab0", [("A", SFAX), ("B", SFAX)], "2026-07-20")
+    _active_notice("ab1", [("A", SFAX), ("B", SFAX)], "2026-07-21")
+    _active_notice("e0", [("E", SFAX)], "2026-07-22")
+    build_id = evidence_pipeline.build_model_evidence(
+        created_at="2026-07-30T00:00:00Z"
+    )
+
+    _, marginals, total_notices = db.build_graph_inputs(build_id)
+
+    # Derived from pair rows -- as validation used to do -- E vanishes and N
+    # is 2, so every marginal is understated and PPMI comes out systematically
+    # higher than the value production actually clustered on.
+    assert marginals == db.build_locality_counts(build_id)
+    assert marginals["E"] == 1
+    assert total_notices == db.model_build_counts(build_id)[0] == 3
+
+
+def test_restricted_graphs_carry_the_geographic_bonus_production_applies():
+    _canonical_geography({"A": "unit-a", "B": "unit-a"})
+    build_id = _seeded_build()
+
+    served = build_graph_for_build(build_id)
+    # The bootstrap and holdout graphs are the ones validation scores against.
+    restricted = build_graph_for_build(
+        build_id, dates={"2026-07-20", "2026-07-21"}
+    )
+
+    # Hardcoding geographic_confidence=None here is what made validation score
+    # a bonus-free graph while production served a bonus-bearing one.
+    assert served["A"]["B"]["geographic_bonus"] > 0
+    assert restricted["A"]["B"]["geographic_bonus"] > 0
+
+
+def test_restricting_dates_matches_a_build_that_never_saw_the_others():
+    kept = ("2026-07-20", "2026-07-21")
+    narrow_build = _seeded_build(dates=kept)
+    # The same evidence, plus one more outage day.
+    _active_notice("ab2", [("A", SFAX), ("B", SFAX)], "2026-07-22")
+    _active_notice("cd2", [("C", SFAX), ("D", SFAX)], "2026-07-22")
+    wide_build = evidence_pipeline.build_model_evidence(
+        created_at="2026-07-30T01:00:00Z"
+    )
+
+    restricted = db.build_graph_inputs(wide_build, dates=set(kept))
+    narrow = db.build_graph_inputs(narrow_build)
+
+    # Restriction has to be equivalent to never having had the extra evidence,
+    # or a bootstrap replicate is not a resample of the model at all.
+    assert restricted[1] == narrow[1]
+    assert restricted[2] == narrow[2]
+    assert [dict(row) for row in restricted[0]] == [
+        dict(row) for row in narrow[0]
+    ]
+
+
+def test_the_report_scores_the_partition_it_is_handed():
+    build_id = _seeded_build()
+
+    served = validate_cluster_run(
+        build_id, algorithm_version="a", partition={"A": 0, "B": 0, "C": 1, "D": 1}
+    )
+    wrong = validate_cluster_run(
+        build_id, algorithm_version="a", partition={"A": 0, "B": 1, "C": 0, "D": 1}
+    )
+
+    # A run's own memberships are what the scores are about; a report that
+    # re-derives them describes a model nobody was served.
+    assert served.mean_membership_agreement != wrong.mean_membership_agreement
+
+
+def test_a_pinned_geography_is_not_reported_as_missing():
+    _canonical_geography({"A": "unit-a", "B": "unit-a"})
+    build_id = _seeded_build()
+
+    report = validate_cluster_run(build_id, algorithm_version="a")
+
+    assert db.build_canonical_build_id(build_id) == "cb-1"
+    assert "no canonical geography is pinned" not in report.unmeasured_reasons[
+        "geography"
+    ]
+    # Still unscored -- but for the reason that is actually true.
+    assert report.geography_baseline is None

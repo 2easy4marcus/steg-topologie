@@ -144,22 +144,56 @@ def build_weighted_graph(
     return graph
 
 
-def build_graph_for_build(build_id: str, *, config=CONFIG) -> nx.Graph:
+def build_graph_for_build(
+    build_id: str,
+    *,
+    config=CONFIG,
+    dates=None,
+    exclude_notice_id=None,
+    unweighted=False,
+) -> nx.Graph:
     """Build the V2 graph from one evidence build's pinned snapshot.
 
     Marginals and N come from the build's own rows, never from the global
     locality_notice_counts table, so a graph cannot mix one build's pairs with
     another build's totals.
+
+    `dates`, `exclude_notice_id` and `unweighted` exist for validation, which
+    has to score subsets of the same evidence -- a bootstrap resample, a
+    training window, the largest notice removed, the unweighted co-occurrence
+    baseline. They are optional because validation must run the SAME builder
+    as production: a parallel builder is how the validated graph silently
+    stops describing the served one.
     """
     from .. import db
 
-    edges = [EdgeEvidence(**row) for row in db.build_edge_evidence(build_id)]
-    locality_counts = db.build_locality_counts(build_id)
-    total_notices = db.model_build_counts(build_id)[0]
+    rows, locality_counts, total_notices = db.build_graph_inputs(
+        build_id, dates=dates, exclude_notice_id=exclude_notice_id
+    )
+    edges = [EdgeEvidence(**row) for row in rows]
+    if unweighted:
+        # The raw co-occurrence baseline: keep the evidence, drop the
+        # confidence weighting the model is being asked to justify. Geography
+        # goes back to unmeasured rather than to a neutral 0.0, which the
+        # bonus would read as measured disagreement.
+        edges = [
+            edge.model_copy(
+                update={
+                    "mean_parse_confidence": 1.0,
+                    "mean_scope_confidence": 1.0,
+                    "mean_canonicalization_confidence": 1.0,
+                    "geographic_confidence": None,
+                }
+            )
+            for edge in edges
+        ]
 
     graph = build_weighted_graph(
         edges,
-        total_notices=total_notices,
+        # A restricted subset can legitimately draw no notice at all, and with
+        # no notices there are no edges either, so the positive-N guard has
+        # nothing left to check. Every case where it can still fire keeps it.
+        total_notices=total_notices if total_notices > 0 else 1,
         locality_counts=locality_counts,
         config=config,
     )

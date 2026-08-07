@@ -1623,7 +1623,30 @@ def operational_health_metrics(cutoff: str):
     }
 
 
-def build_edge_evidence(build_id: str) -> list:
+def _notice_restriction(date_column, notice_column, dates, exclude_notice_id):
+    """SQL fragment restricting a build's rows to a subset of its notices.
+
+    Restriction is by outage DATE, not by notice: several notices can describe
+    one outage day, so a notice-level sample would treat one event as
+    independent confirmation of itself. A notice with no parsed date is
+    excluded by any date restriction -- it is not evidence of a sampled day.
+    """
+    clauses = []
+    params = []
+    if dates is not None:
+        # An empty restriction must match nothing, not everything.
+        placeholders = ",".join("?" * len(dates)) or "NULL"
+        clauses.append(f"{date_column} IN ({placeholders})")
+        params.extend(sorted(dates))
+    if exclude_notice_id is not None:
+        clauses.append(f"{notice_column} <> ?")
+        params.append(exclude_notice_id)
+    return "".join(f" AND {clause}" for clause in clauses), params
+
+
+def build_edge_evidence(
+    build_id: str, *, dates=None, exclude_notice_id=None
+) -> list:
     """Per-pair graph inputs, averaged from the build's scoped observations.
 
     Averaging is two-level -- within a notice, then across notices -- because
@@ -1632,12 +1655,17 @@ def build_edge_evidence(build_id: str) -> list:
     and let one wide table pull an edge's reliability down, which is the same
     largest-notice influence readiness is required to exclude.
 
-    geographic_confidence stays NULL until canonical geography is pinned to a
-    build; the graph reads NULL as "unmeasured" and applies no bonus.
+    geographic_confidence is the same two-level average of the per-pair
+    geography agreement resolved through the build's pinned canonical import;
+    it is NULL for a build with no pin, which the graph reads as "unmeasured"
+    and scores with no bonus.
     """
+    restriction, restriction_params = _notice_restriction(
+        "outage_date", "notice_id", dates, exclude_notice_id
+    )
     with get_conn() as conn:
         return conn.execute(
-            """
+            f"""
             WITH per_notice AS (
                 SELECT locality_a, locality_b, notice_id, outage_date,
                        AVG(parse_confidence) AS parse_confidence,
@@ -1646,7 +1674,7 @@ def build_edge_evidence(build_id: str) -> list:
                            AS canonicalization_confidence,
                        AVG(geographic_confidence) AS geographic_confidence
                 FROM build_pair_observations
-                WHERE build_id = ?
+                WHERE build_id = ?{restriction}
                 GROUP BY locality_a, locality_b, notice_id, outage_date
             )
             SELECT locality_a, locality_b,
@@ -1661,8 +1689,63 @@ def build_edge_evidence(build_id: str) -> list:
             GROUP BY locality_a, locality_b
             ORDER BY locality_a, locality_b
             """,
-            [build_id],
+            [build_id, *restriction_params],
         ).fetchall()
+
+
+def build_graph_inputs(build_id: str, *, dates=None, exclude_notice_id=None):
+    """(edges, marginals, N) for one build's graph, optionally restricted.
+
+    The single aggregation behind every V2 graph. Validation scores subsets of
+    the very evidence production clusters -- a bootstrap resample of outage
+    dates, a training window, the largest notice removed -- so it comes
+    through here too rather than re-deriving the same numbers in Python. A
+    second implementation of this aggregation is precisely how the graph that
+    gets validated drifts away from the graph that gets served.
+
+    Marginals and N come from `build_locality_observations`, so a locality
+    seen only in single-locality scopes still counts towards its own marginal
+    and towards N. Deriving them from pair rows instead would understate every
+    marginal and inflate PPMI.
+    """
+    restriction, restriction_params = _notice_restriction(
+        "bnp.outage_date", "blo.notice_id", dates, exclude_notice_id
+    )
+    scope = f"""
+        FROM build_locality_observations blo
+        JOIN build_notice_parses bnp
+          ON bnp.build_id = blo.build_id AND bnp.notice_id = blo.notice_id
+        WHERE blo.build_id = ?{restriction}
+    """
+    params = [build_id, *restriction_params]
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT canonical_name AS locality, COUNT(*) AS notice_count
+            FROM (SELECT DISTINCT blo.notice_id, blo.canonical_name {scope})
+            GROUP BY canonical_name
+            ORDER BY canonical_name
+            """,
+            params,
+        ).fetchall()
+        total_notices = conn.execute(
+            f"SELECT COUNT(DISTINCT blo.notice_id) AS c {scope}", params
+        ).fetchone()["c"]
+    edges = build_edge_evidence(
+        build_id, dates=dates, exclude_notice_id=exclude_notice_id
+    )
+    counts = {row["locality"]: row["notice_count"] for row in rows}
+    return edges, counts, total_notices
+
+
+def build_canonical_build_id(build_id: str):
+    """The canonical geography import pinned to this evidence build, or None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT canonical_build_id FROM model_builds WHERE build_id = ?",
+            [build_id],
+        ).fetchone()
+    return row["canonical_build_id"] if row else None
 
 
 def edge_evidence(

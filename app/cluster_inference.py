@@ -216,7 +216,12 @@ def run_recluster() -> dict:
     if previous_run_id:
         db.write_cluster_lineage(run_id, previous_run_id, lineage_rows)
 
-    report = validate_cluster_run(build_id, algorithm_version=ALGORITHM_VERSION)
+    # Scored against the partition this run actually published, not against a
+    # re-derivation of it, so the numbers an operator reads describe the model
+    # that is about to be served.
+    report = validate_cluster_run(
+        build_id, algorithm_version=ALGORITHM_VERSION, partition=partition
+    )
     db.record_validation_run(
         run_id,
         report,

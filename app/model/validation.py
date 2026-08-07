@@ -16,6 +16,12 @@ Two choices follow the hardening amendments directly:
 - Membership agreement is **label-invariant**. Louvain's community integers
   are arbitrary per run, so raw label comparison measures nothing; agreement
   is computed over pairwise co-membership instead.
+
+A third rule is what makes any of it mean something: every graph scored here
+comes out of `graph.build_graph_for_build`, the same builder production runs,
+restricted to the subset the metric needs. Validation owns no graph builder of
+its own. It did once, and the two drifted -- a score is only about the served
+model for as long as it is computed from the served model's inputs.
 """
 
 import json
@@ -25,7 +31,6 @@ from itertools import combinations
 from pydantic import BaseModel
 
 from .config import CONFIG
-from .graph import EdgeEvidence, build_weighted_graph
 
 METRIC_DEFINITIONS = {
     "membership_agreement": (
@@ -122,81 +127,21 @@ def temporal_split(dates: list):
     return set(ordered[:cut]), set(ordered[cut:])
 
 
-def _cluster(graph):
+def _cluster(build_id, **restriction):
+    """Cluster one build's graph, through the production builder every time.
+
+    Validation used to rebuild its own graph from the raw observation rows.
+    That parallel builder drifted: it never applied the geographic bonus, it
+    averaged confidence flat over observation rows instead of per notice, and
+    it derived marginals from pair rows only. The scores therefore described a
+    model that was never served. There is now one builder, and validation
+    reaches the subsets it needs by restricting its inputs, not by
+    reimplementing it.
+    """
     from ..cluster_inference import compute_clusters
+    from .graph import build_graph_for_build
 
-    return compute_clusters(graph)
-
-
-def _graph_from_rows(rows, *, config=CONFIG, unweighted=False):
-    if not rows:
-        return build_weighted_graph(
-            [], total_notices=1, locality_counts={}, config=config
-        )
-    total_notices = len({row["notice_id"] for row in _flatten(rows)})
-    counts = {}
-    for locality, notices in _locality_notices(rows).items():
-        counts[locality] = len(notices)
-    edges = []
-    for (a, b), observations in rows.items():
-        notices = {row["notice_id"] for row in observations}
-        dates = {row["outage_date"] for row in observations} - {None}
-        edges.append(
-            EdgeEvidence(
-                locality_a=a,
-                locality_b=b,
-                notice_count=len(notices),
-                distinct_date_count=len(dates),
-                mean_parse_confidence=(
-                    1.0
-                    if unweighted
-                    else _mean(observations, "parse_confidence")
-                ),
-                mean_scope_confidence=(
-                    1.0
-                    if unweighted
-                    else _mean(observations, "scope_confidence")
-                ),
-                mean_canonicalization_confidence=(
-                    1.0
-                    if unweighted
-                    else _mean(observations, "canonicalization_confidence")
-                ),
-                geographic_confidence=None,
-            )
-        )
-    return build_weighted_graph(
-        edges,
-        total_notices=max(1, total_notices),
-        locality_counts=counts,
-        config=config,
-    )
-
-
-def _flatten(rows):
-    for observations in rows.values():
-        yield from observations
-
-
-def _locality_notices(rows):
-    out = {}
-    for (a, b), observations in rows.items():
-        for locality in (a, b):
-            bucket = out.setdefault(locality, set())
-            bucket.update(row["notice_id"] for row in observations)
-    return out
-
-
-def _mean(observations, key):
-    values = [row[key] for row in observations if row[key] is not None]
-    return sum(values) / len(values) if values else 0.0
-
-
-def _group(observations):
-    grouped = {}
-    for row in observations:
-        grouped.setdefault((row["locality_a"], row["locality_b"]), []).append(row)
-    return grouped
+    return compute_clusters(build_graph_for_build(build_id, **restriction))
 
 
 def _restrict(observations, dates):
@@ -204,14 +149,24 @@ def _restrict(observations, dates):
 
 
 def validate_cluster_run(
-    build_id: str, *, algorithm_version: str, config=CONFIG
+    build_id: str, *, algorithm_version: str, partition=None, config=CONFIG
 ) -> ValidationReport:
+    """Score a cluster run against the partition it actually published.
+
+    Pass `partition` -- the run's stored memberships -- so every score is
+    stated about the served model rather than about a re-derivation of it.
+    Omitted, the build's full graph is clustered instead; that reproduces the
+    same partition today, but only as long as nothing between here and
+    `run_recluster` diverges, which is the failure this parameter removes.
+    """
     from .. import db
 
     observations = db.build_scoped_cooccurrences(build_id)
     reasons = {}
 
-    full_partition = _cluster(_graph_from_rows(_group(observations)))
+    full_partition = (
+        partition if partition is not None else _cluster(build_id, config=config)
+    )
     dates = sorted({row["outage_date"] for row in observations} - {None})
 
     # Bootstrap over outage dates.
@@ -221,10 +176,8 @@ def validate_cluster_run(
         if not dates:
             break
         sampled = {rng.choice(dates) for _ in dates}
-        partition = _cluster(
-            _graph_from_rows(_group(_restrict(observations, sampled)))
-        )
-        score = co_membership_agreement(full_partition, partition)
+        replicate = _cluster(build_id, dates=sampled, config=config)
+        score = co_membership_agreement(full_partition, replicate)
         if score is not None:
             agreements.append(score)
     mean_agreement = (
@@ -243,9 +196,7 @@ def validate_cluster_run(
             "fewer than two distinct outage dates, so no holdout exists"
         )
     else:
-        train_partition = _cluster(
-            _graph_from_rows(_group(_restrict(observations, train_dates)))
-        )
+        train_partition = _cluster(build_id, dates=train_dates, config=config)
         held_pairs = {
             (row["locality_a"], row["locality_b"])
             for row in _restrict(observations, holdout_dates)
@@ -269,11 +220,14 @@ def validate_cluster_run(
 
     # Baselines.
     raw_baseline = co_membership_agreement(
-        full_partition,
-        _cluster(_graph_from_rows(_group(observations), unweighted=True)),
+        full_partition, _cluster(build_id, unweighted=True, config=config)
     )
     reasons["geography"] = (
-        "no canonical geography is pinned to an evidence build yet, so a "
+        "canonical geography is pinned to this build, but clustering by "
+        "geography alone is not implemented, so the geography and "
+        "service-unit baselines are not scored"
+        if db.build_canonical_build_id(build_id)
+        else "no canonical geography is pinned to this evidence build, so a "
         "geography-only clustering cannot be built"
     )
 
@@ -284,11 +238,9 @@ def validate_cluster_run(
         notice_sizes[row["notice_id"]] = notice_sizes.get(row["notice_id"], 0) + 1
     if notice_sizes:
         largest = max(sorted(notice_sizes), key=lambda key: notice_sizes[key])
-        remaining = [
-            row for row in observations if row["notice_id"] != largest
-        ]
         largest_removed = co_membership_agreement(
-            full_partition, _cluster(_graph_from_rows(_group(remaining)))
+            full_partition,
+            _cluster(build_id, exclude_notice_id=largest, config=config),
         )
     if largest_removed is None:
         reasons["largest_notice_removed_agreement"] = (
@@ -302,8 +254,7 @@ def validate_cluster_run(
         }
     )
     sensitivity = co_membership_agreement(
-        full_partition,
-        _cluster(_graph_from_rows(_group(observations), config=stricter)),
+        full_partition, _cluster(build_id, config=stricter)
     )
     if sensitivity is None:
         reasons["config_sensitivity_agreement"] = (
