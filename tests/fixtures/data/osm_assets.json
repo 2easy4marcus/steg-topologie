@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "Synthetic OSM element stream for the private Sfax/Kerkennah topology",
+    "pilot. Shaped like Overpass/osmium JSON output so the pure snapshot",
+    "builder can be driven without the 84MB .pbf, which is gitignored and",
+    "absent in CI.",
+    "",
+    "Nodes 2-5 carry no power tag: they exist only to prove that topology",
+    "node coordinates referenced by power ways are retained, which is what",
+    "lets way-based substation way/20 share node 3 with line way/10 and end",
+    "up in the same connected component as node substation node/1.",
+    "",
+    "node/900 and way/30 sit in Tunis, outside the Sfax/Kerkennah bounding",
+    "box, and must not survive a bounded extract.",
+    "",
+    "relation/200 is a power relation with an unsupported structure type;",
+    "relation/300 is a supported type whose member is another relation.",
+    "Both are quarantined explicitly rather than silently skipped."
+  ],
+  "elements": [
+    {"type": "node", "id": 1, "lat": 34.7400, "lon": 10.7600,
+     "tags": {"power": "substation", "voltage": "90000"}},
+    {"type": "node", "id": 2, "lat": 34.7410, "lon": 10.7610},
+    {"type": "node", "id": 3, "lat": 34.7420, "lon": 10.7620},
+    {"type": "node", "id": 4, "lat": 34.7430, "lon": 10.7630},
+    {"type": "node", "id": 5, "lat": 34.7440, "lon": 10.7640},
+    {"type": "node", "id": 7, "lat": 34.7000, "lon": 10.7000,
+     "tags": {"power": "transformer"}},
+    {"type": "node", "id": 900, "lat": 36.8000, "lon": 10.1800,
+     "tags": {"power": "pole"}},
+
+    {"type": "way", "id": 10, "nodes": [1, 2, 3],
+     "tags": {"power": "line", "voltage": "90000"}},
+    {"type": "way", "id": 20, "nodes": [3, 4, 5],
+     "tags": {"power": "substation"}},
+    {"type": "way", "id": 30, "nodes": [900],
+     "tags": {"power": "minor_line"}},
+
+    {"type": "relation", "id": 100,
+     "members": [{"type": "way", "ref": 20, "role": ""},
+                 {"type": "node", "ref": 1, "role": ""}],
+     "tags": {"type": "site", "site": "power"}},
+    {"type": "relation", "id": 200,
+     "members": [{"type": "way", "ref": 10, "role": ""}],
+     "tags": {"type": "route", "route": "power"}},
+    {"type": "relation", "id": 300,
+     "members": [{"type": "relation", "ref": 100, "role": ""}],
+     "tags": {"type": "site", "site": "power"}}
+  ]
+}

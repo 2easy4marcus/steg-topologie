@@ -252,7 +252,12 @@ def build_model_evidence(
         observability.record_job_event(
             job_id, "build_started", occurred_at=created_at
         )
-    db.create_model_build(build_id, created_at)
+    # The canonical geography is pinned at creation for the same reason the
+    # source population is pinned below: a canonical import activating
+    # mid-build must not change what this build's geography says.
+    db.create_model_build(
+        build_id, created_at, db.active_canonical_build_id()
+    )
     # Pin this build's source population before measuring anything. Every
     # later step reads only the pinned rows, so a parser activation landing
     # mid-build cannot change what this build observed.

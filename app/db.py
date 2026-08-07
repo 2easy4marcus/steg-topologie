@@ -602,15 +602,34 @@ def activate_notice_parse(
         raise ValueError("parse does not belong to latest snapshot")
 
 
-def create_model_build(build_id: str, created_at: str) -> None:
+def create_model_build(
+    build_id: str, created_at: str, canonical_build_id: str | None = None
+) -> None:
+    """Open a build, pinning the canonical geography it will resolve through.
+
+    The pin is taken once, here, and never re-read: a canonical import that
+    activates mid-build must not change what this build's geography says, for
+    the same reason a parser activation must not change its source population.
+    None means no canonical import was active, and the build's geographic
+    confidence stays unmeasured rather than being borrowed from a later one.
+    """
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO model_builds(build_id, status, created_at)
-            VALUES (?, 'building', ?)
+            INSERT INTO model_builds(
+                build_id, status, created_at, canonical_build_id
+            ) VALUES (?, 'building', ?, ?)
             """,
-            [build_id, created_at],
+            [build_id, created_at, canonical_build_id],
         )
+
+
+def active_canonical_build_id():
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT active_build_id FROM canonical_state WHERE state_id = 1"
+        ).fetchone()
+        return row["active_build_id"] if row else None
 
 
 def complete_model_build(
@@ -1053,9 +1072,15 @@ def populate_scoped_observations(build_id: str, config) -> None:
     """Pair localities only inside a shared scope, with separate confidences.
 
     Confidence components are stored side by side and never blended.
-    `geographic_confidence` stays NULL because no geography has been joined at
-    this point in the pipeline -- defaulting it to 1.0 would fabricate
-    evidence the build does not have.
+
+    `geographic_confidence` resolves through the build's pinned canonical
+    geography and nowhere else. Three distinct outcomes, deliberately:
+    NULL when either locality has no measured service unit under that pin (or
+    the build has no pin at all) -- unmeasured; 0.0 when both were measured
+    and sit in different service units -- measured disagreement; otherwise the
+    weaker of the two spatial confidences. Defaulting the unmeasured case to
+    1.0 would fabricate evidence the build does not have, and the graph reads
+    NULL as "no bonus" rather than "no agreement".
     """
     with get_conn() as conn:
         conn.execute(
@@ -1077,7 +1102,14 @@ def populate_scoped_observations(build_id: str, config) -> None:
                    CASE WHEN a.scope_kind = 'subregion' THEN ? ELSE ? END,
                    ?,
                    CASE WHEN bnp.outage_date IS NULL THEN NULL ELSE 1.0 END,
-                   NULL,
+                   CASE
+                       WHEN ca.service_unit_id IS NULL
+                            OR cb.service_unit_id IS NULL THEN NULL
+                       WHEN ca.service_unit_id = cb.service_unit_id
+                           THEN MIN(ca.spatial_confidence,
+                                    cb.spatial_confidence)
+                       ELSE 0.0
+                   END,
                    ?
             FROM build_locality_observations a
             JOIN build_locality_observations b
@@ -1089,6 +1121,15 @@ def populate_scoped_observations(build_id: str, config) -> None:
             JOIN build_notice_parses bnp
               ON bnp.build_id = a.build_id
              AND bnp.notice_id = a.notice_id
+            -- LEFT, so a build row that does not exist yet leaves geography
+            -- unmeasured rather than silently emptying the whole population.
+            LEFT JOIN model_builds mb ON mb.build_id = a.build_id
+            LEFT JOIN locality_context ca
+              ON ca.canonical_build_id = mb.canonical_build_id
+             AND ca.locality = a.canonical_name
+            LEFT JOIN locality_context cb
+              ON cb.canonical_build_id = mb.canonical_build_id
+             AND cb.locality = b.canonical_name
             WHERE a.build_id = ?
             """,
             [
@@ -1208,6 +1249,137 @@ def build_locality_counts(build_id: str) -> dict:
             [build_id],
         ).fetchall()
         return {row["locality"]: row["notice_count"] for row in rows}
+
+
+def build_locality_geography(build_id: str) -> dict:
+    """{locality: {latitude, longitude, service_unit_id, spatial_confidence}}.
+
+    Resolved through the build's pinned canonical build, so two runs against
+    the same build always see the same geography. A build with no pin gets an
+    empty mapping rather than the currently-active import's rows. Coordinates
+    come from the geocoded `localities` table and may be NULL; the caller
+    decides whether an unpositioned locality can bound anything.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT lc.locality, l.lat AS latitude, l.lng AS longitude,
+                   lc.service_unit_id, lc.spatial_confidence
+            FROM model_builds mb
+            JOIN locality_context lc
+              ON lc.canonical_build_id = mb.canonical_build_id
+            LEFT JOIN localities l ON l.name = lc.locality
+            WHERE mb.build_id = ?
+            ORDER BY lc.locality
+            """,
+            [build_id],
+        ).fetchall()
+    return {
+        row["locality"]: {
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "service_unit_id": row["service_unit_id"],
+            "spatial_confidence": row["spatial_confidence"],
+        }
+        for row in rows
+    }
+
+
+def cluster_independent_dates(build_id: str, localities) -> int:
+    """Distinct outage dates on which two of `localities` co-occurred.
+
+    The measured evidence behind a cluster, counted from the build's own
+    pinned observations. Fewer than two is one event, not a repeated
+    relationship, and no candidate ranking may be derived from it.
+    """
+    names = sorted(localities)
+    if len(names) < 2:
+        return 0
+    placeholders = ", ".join(["?"] * len(names))
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT outage_date) AS c
+            FROM build_pair_observations
+            WHERE build_id = ?
+              AND locality_a IN ({placeholders})
+              AND locality_b IN ({placeholders})
+            """,
+            [build_id, *names, *names],
+        ).fetchone()["c"]
+
+
+def record_candidate_run(
+    run_id: str,
+    *,
+    cluster_run_id: str,
+    build_id: str,
+    source_snapshot_id: str,
+    config_version: str,
+    scoring_version: str,
+    status: str,
+    created_at: str,
+    completed_at: str | None = None,
+    public_error_code: str | None = None,
+) -> None:
+    """Private, experimental. No public route reads this table."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO asset_candidate_runs(
+                run_id, cluster_run_id, build_id, source_snapshot_id,
+                config_version, scoring_version, status, created_at,
+                completed_at, public_error_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                run_id,
+                cluster_run_id,
+                build_id,
+                source_snapshot_id,
+                config_version,
+                scoring_version,
+                status,
+                created_at,
+                completed_at,
+                public_error_code,
+            ],
+        )
+
+
+def write_candidate_scores(
+    run_id: str, cluster_id: int, candidates: list, sensitivity: dict
+) -> None:
+    with get_conn() as conn:
+        for candidate in candidates:
+            conn.execute(
+                """
+                INSERT INTO asset_candidate_scores(
+                    run_id, cluster_id, asset_id, rank, score,
+                    component_json, sensitivity_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    run_id,
+                    cluster_id,
+                    candidate.asset_id,
+                    candidate.rank,
+                    candidate.score,
+                    json.dumps(candidate.components, sort_keys=True),
+                    json.dumps(sensitivity[candidate.asset_id]),
+                ],
+            )
+
+
+def candidate_scores(run_id: str) -> list:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM asset_candidate_scores WHERE run_id = ?
+            ORDER BY cluster_id, rank
+            """,
+            [run_id],
+        ).fetchall()
 
 
 def build_cooccurrences(build_id: str) -> list:
