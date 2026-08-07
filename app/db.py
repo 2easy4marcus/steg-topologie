@@ -858,6 +858,11 @@ def reserve_cluster_ids(count: int) -> int:
     cluster_members rows, and a maximum recomputed afterwards would reissue
     ids that already belonged to something else. Reservations the caller does
     not use are burned rather than returned.
+
+    The one MAX(cluster_id) in this system is migration 0003's *seed*, which
+    runs once against the full table so the allocator starts above the ids a
+    pre-0003 deployment already holds. That is not this objection; do not
+    generalise it back into this function.
     """
     with get_conn() as conn:
         if count <= 0:

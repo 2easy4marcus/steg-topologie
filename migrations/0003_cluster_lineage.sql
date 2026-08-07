@@ -27,8 +27,20 @@ CREATE TABLE IF NOT EXISTS cluster_id_allocator (
     next_cluster_id INTEGER NOT NULL CHECK (next_cluster_id >= 0)
 );
 
+-- Seeded ABOVE every cluster id already in use, not at 0. Deployments that
+-- predate this migration took cluster ids straight from Louvain's partition,
+-- so cluster_members already holds 0..k. Seeding at 0 would hand those same
+-- ids back out on the first recluster after deploy: surviving clusters keep
+-- their inherited ids while new ones are issued 0, 1, 2..., so two distinct
+-- clusters end up sharing one cluster_id inside a single run. The primary key
+-- is (run_id, locality), so nothing rejects it and the collision is silent.
+--
+-- MAX() is correct HERE and only here, because it runs once, at seed time,
+-- against the whole table. Recomputing it per run is what reserve_cluster_ids
+-- refuses to do: retention deletes cluster_members rows, and a maximum taken
+-- after a delete reissues ids that already belonged to something else.
 INSERT INTO cluster_id_allocator(singleton_id, next_cluster_id)
-SELECT 1, 0
+SELECT 1, COALESCE((SELECT MAX(cluster_id) + 1 FROM cluster_members), 0)
 WHERE NOT EXISTS (SELECT 1 FROM cluster_id_allocator WHERE singleton_id = 1);
 
 CREATE TABLE IF NOT EXISTS cluster_lineage (

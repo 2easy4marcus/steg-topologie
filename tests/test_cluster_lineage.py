@@ -1,6 +1,6 @@
 import pytest
 
-from app import db
+from app import db, migrations
 from app.model.cluster_ids import JACCARD_SCALE, match_cluster_ids
 
 
@@ -144,6 +144,52 @@ def test_reserving_nothing_does_not_advance_the_allocator():
 
     assert db.reserve_cluster_ids(0) == 2
     assert db.reserve_cluster_ids(1) == 2
+
+
+def test_allocator_seeds_above_ids_that_predate_the_migration(
+    tmp_path, monkeypatch
+):
+    """Migration 0003 must not hand back ids an existing deployment holds.
+
+    Every other fixture here starts from a virgin allocator, so none of them
+    can see this: before 0003 existed, cluster ids came straight out of
+    Louvain's partition, so any live deployment already has cluster_members
+    rows numbered 0..k. Seeding the allocator at 0 reissues exactly those ids
+    to this run's unmatched clusters, and since cluster_members is keyed on
+    (run_id, locality) with no uniqueness on cluster_id, two distinct clusters
+    silently share one id.
+    """
+    monkeypatch.setattr(db, "DB_URL", f"file:{tmp_path / 'pre-0003.db'}")
+    monkeypatch.setattr(db, "AUTH_TOKEN", None)
+
+    # A deployment as it stands *before* 0003: base schema, real cluster rows,
+    # no allocator table at all.
+    with db.get_conn() as conn:
+        for statement in db.SCHEMA_STATEMENTS:
+            conn.execute(statement)
+        conn.execute(
+            """
+            INSERT INTO cluster_runs(
+                run_id, build_id, algorithm_version, status, started_at
+            ) VALUES ('old-run', 'old-build', 'algo-v1', 'completed', 'then')
+            """
+        )
+        for locality, cluster_id in (("A", 0), ("B", 1), ("C", 2)):
+            conn.execute(
+                """
+                INSERT INTO cluster_members(
+                    run_id, locality, cluster_id, stability
+                ) VALUES ('old-run', ?, ?, 0.0)
+                """,
+                [locality, cluster_id],
+            )
+
+    migrations.apply_all()
+
+    # The next id issued must be above every id already on disk. At 0 the
+    # allocator would hand 0, 1 and 2 straight back.
+    assert db.reserve_cluster_ids(0) == 3
+    assert db.reserve_cluster_ids(1) == 3
 
 
 # --- lineage persistence ---------------------------------------------------
