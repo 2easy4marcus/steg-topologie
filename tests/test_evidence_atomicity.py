@@ -237,6 +237,30 @@ def test_rollback_requires_existing_notice_state():
     assert db.latest_notice_rollback("notice-1") is None
 
 
+def test_failed_v2_build_keeps_last_known_good_build(monkeypatch):
+    """A build that fails validation must not unseat the active one.
+
+    `build_model_evidence` creates and populates the new build before it
+    validates, so the failure lands with a half-built row already in
+    `model_builds`. Activation is the last step and is never reached.
+    """
+    db.create_model_build("build-good", "2026-07-26T10:00:00Z")
+    db.complete_model_build("build-good", "2026-07-26T10:01:00Z", 0, 0, 0)
+    evidence_pipeline.activate_model_build("build-good")
+
+    def _refuse(_build_id):
+        raise ValueError("invalid")
+
+    monkeypatch.setattr(db, "validate_model_build", _refuse)
+
+    with pytest.raises(ValueError, match="invalid"):
+        evidence_pipeline.build_model_evidence(
+            created_at="2026-07-30T10:00:00Z"
+        )
+
+    assert db.active_build_id() == "build-good"
+
+
 def test_cluster_activation_requires_current_build():
     db.create_model_build("build-1", "2026-07-26T10:00:00Z")
     db.complete_model_build("build-1", "2026-07-26T10:01:00Z", 0, 0, 0)

@@ -50,6 +50,35 @@ def test_public_openapi_is_an_explicit_safe_versioned_contract():
         assert forbidden not in serialized
 
 
+def test_public_responses_never_contain_private_candidate_fields():
+    """The private pilot's field names must not reach a live public body.
+
+    `test_public_openapi_is_an_explicit_safe_versioned_contract` covers the
+    published contract; this covers the routes that answer outside it --
+    /api/model-status and /api/clusters are real public routes that the
+    three-path OpenAPI allow-list deliberately does not describe.
+    """
+    client = TestClient(main.app)
+    forbidden = ("asset_candidate", "source_snapshot_id")
+
+    for path in (
+        "/api/status",
+        "/api/model-status",
+        "/api/clusters",
+        "/openapi.json",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert all(value not in response.text for value in forbidden), path
+
+    # An empty database serialises no list items, so the bodies above cannot
+    # see a field added to a nested item model. Check the declared schemas
+    # too, which carry the nested models whether or not a row exists.
+    for model in (main.ClustersResponse, main.ModelStatusResponse):
+        schema = json.dumps(model.model_json_schema())
+        assert all(value not in schema for value in forbidden), model
+
+
 def test_public_docs_uses_public_schema():
     response = TestClient(main.app).get("/docs")
 
