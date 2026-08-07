@@ -9,6 +9,14 @@ WORKDIR /app
 RUN addgroup --system app \
     && adduser --system --ingroup app app
 
+# pyosmium ships a compiled extension that dynamically links libexpat, which
+# python:*-slim does not carry. Without it `import osmium` raises ImportError
+# and the topology reader test fails in the container but passes on a host
+# that happens to have expat installed.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --requirement requirements.txt
 
