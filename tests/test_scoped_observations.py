@@ -281,6 +281,47 @@ def test_observations_require_a_pinned_notice():
             )
 
 
+def test_legacy_rows_with_null_ordinals_and_split_headings_still_build():
+    # The exact shape of the database at the moment this ships: parses
+    # written before scope ordinals existed have NULL ordinals but real
+    # headings, and one canonical locality can appear under two of them.
+    # scope_name is display-only and not part of the key, so this must
+    # collapse to one row rather than abort the build.
+    _active_notice("n1", [("A", SFAX), ("B", SFAX), ("A", KERKENNAH)], "2026-07-20")
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE notice_localities SET scope_ordinal = NULL "
+            "WHERE parse_id = 'parse-n1'"
+        )
+
+    build_id = _build()
+
+    assert set(_pairs(build_id)) == {("A", "B")}
+    assert db.build_scoped_cooccurrences(build_id)[0][
+        "scope_kind"
+    ] == "notice_fallback"
+
+
+def test_repeated_pairs_threshold_follows_config(monkeypatch):
+    _active_notice("n1", [("A", SFAX), ("B", SFAX)], "2026-07-20")
+    build_id = _build()
+    assert db.model_readiness_metrics(build_id)["repeated_pairs"] == 0
+
+    monkeypatch.setattr(db.CONFIG, "min_edge_distinct_dates", 1)
+
+    assert db.model_readiness_metrics(build_id)["repeated_pairs"] == 1
+
+
+def test_naive_build_timestamps_do_not_break_readiness():
+    _active_notice("n1", [("A", SFAX), ("B", SFAX)], "2026-07-20")
+
+    build_id = evidence_pipeline.build_model_evidence(
+        created_at="2026-07-30T00:00:00"
+    )
+
+    assert db.publication_decision("evidence_build", build_id) is not None
+
+
 def test_legacy_scope_ordinals_are_inferred_from_stored_headings():
     assert evidence_pipeline.infer_scope_ordinals(
         [SFAX, SFAX, KERKENNAH, None]

@@ -19,6 +19,8 @@ from pathlib import Path
 
 import libsql_client
 
+from .model.config import CONFIG
+
 DB_FILE_DEFAULT = Path(__file__).parent / "tracker.db"
 DB_URL = os.environ.get("TURSO_DATABASE_URL", f"file:{DB_FILE_DEFAULT}")
 AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
@@ -852,21 +854,31 @@ def pin_build_snapshot(build_id: str) -> None:
         # stay distinct and an unheaded cell is still its own scope. Only a
         # parse with no cell structure at all falls back to whole-notice
         # scoping.
+        #
+        # GROUP BY, not SELECT DISTINCT: scope_name is display-only and is not
+        # part of the primary key, so a parse written before scope ordinals
+        # existed -- every row NULL ordinal, but different headings -- can
+        # carry one canonical name under two headings. DISTINCT would keep
+        # both rows and the insert would abort on the primary key. MIN picks
+        # one heading deterministically for display.
         conn.execute(
             """
             INSERT INTO build_locality_observations(
                 build_id, notice_id, scope_kind, scope_ordinal, scope_name,
                 canonical_name
             )
-            SELECT DISTINCT bnp.build_id, bnp.notice_id,
+            SELECT bnp.build_id, bnp.notice_id,
                    CASE WHEN nl.scope_ordinal IS NULL
-                        THEN 'notice_fallback' ELSE 'subregion' END,
-                   COALESCE(nl.scope_ordinal, 0),
-                   NULLIF(TRIM(COALESCE(nl.subregion_name, '')), ''),
+                        THEN 'notice_fallback'
+                        ELSE 'subregion' END AS scope_kind,
+                   COALESCE(nl.scope_ordinal, 0) AS scope_ordinal,
+                   MIN(NULLIF(TRIM(COALESCE(nl.subregion_name, '')), '')),
                    nl.canonical_name
             FROM build_notice_parses bnp
             JOIN notice_localities nl ON nl.parse_id = bnp.parse_id
             WHERE bnp.build_id = ?
+            GROUP BY bnp.build_id, bnp.notice_id, scope_kind, scope_ordinal,
+                     nl.canonical_name
             """,
             [build_id],
         )
@@ -1086,9 +1098,9 @@ def model_readiness_metrics(build_id: str | None):
                  WHERE build_id = ?) AS unique_localities,
                 (SELECT COUNT(*) FROM build_cooccurrences
                  WHERE build_id = ?
-                   AND distinct_date_count >= 2) AS repeated_pairs
+                   AND distinct_date_count >= ?) AS repeated_pairs
             """,
-            [build_id, build_id],
+            [build_id, build_id, CONFIG.min_edge_distinct_dates],
         ).fetchone()
         share = conn.execute(
             """

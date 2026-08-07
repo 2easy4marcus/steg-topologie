@@ -3,7 +3,7 @@
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from . import db, locality_dedup, steg_scraper
@@ -33,11 +33,13 @@ def infer_scope_ordinals(subregion_names: list) -> list:
     scope ordinals existed. Localities keep their emission order, so a change
     of subregion name marks a cell boundary.
 
-    ponytail: two *adjacent* cells that shared the identical heading text
-    merge into one scope here -- exactly the case scope ordinals exist to
-    separate. It is unavoidable without the HTML, and it only affects parses
-    written before this parser version. Upgrade path: re-run the HTML parser
-    over `notice_snapshots.raw_html` instead of calling this.
+    ponytail: two cases lose cell boundaries here, both unavoidable without
+    the HTML and both limited to parses written before this parser version.
+    Adjacent cells that shared the identical heading text merge into one
+    scope. A notice whose headings ALL failed to parse is indistinguishable
+    from a notice that never had cells, so it degrades to whole-notice
+    fallback and pairs across cells at 0.35 confidence. Upgrade path: re-run
+    the HTML parser over `notice_snapshots.raw_html` instead of calling this.
     """
     if all(name is None for name in subregion_names):
         return [None] * len(subregion_names)
@@ -207,10 +209,17 @@ def activate_cluster_run(run_id: str) -> None:
 
 
 def _as_datetime(value: str):
+    """Parse a build timestamp, always timezone-aware.
+
+    Readiness subtracts this from a tz-aware scrape timestamp, so a naive
+    value would raise. Callers pass UTC today; assume UTC when the stamp
+    omits an offset rather than letting it through.
+    """
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _publication_decision(readiness) -> str:

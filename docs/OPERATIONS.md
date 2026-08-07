@@ -85,6 +85,32 @@ exception text to them.
 
 Rotation does not require changing `CRON_SECRET`.
 
+## Deploying the scoped evidence model (parser version 3)
+
+Parser version 3 records which source table cell each locality came from, and
+evidence builds now derive everything from a pinned per-build snapshot. Two
+consequences on the deploy that first ships it, in this order:
+
+1. **Reparse before trusting the first build.** Run
+
+   ```bash
+   python -m app.reparse_snapshots            # dry run, prints the count
+   python -m app.reparse_snapshots --apply
+   ```
+
+   Parses written by version 2 have no cell ordinals. Until they are
+   reparsed, every such notice is treated as one whole-notice scope at
+   `notice_fallback` confidence (0.35), which pairs localities across cell
+   boundaries exactly as version 1 did — down-weighted, but still inferred.
+   Reparse reconstructs the boundaries from the stored subregion headings.
+
+2. **Expect one unready window.** Readiness metrics read the pinned snapshot,
+   which no pre-existing build has. Until the next evidence build completes,
+   `/api/model-readiness` reports `valid_notices`, `distinct_outage_dates`,
+   and `active_ok_ratio` as 0, and `POST /api/internal/recluster` returns
+   `insufficient_data`. Scheduled ingestion rebuilds automatically; to close
+   the window immediately, run a rebuild rather than waiting for a scrape.
+
 ## Sensitive-response checklist
 
 Before deployment, inspect public and protected operations responses and
