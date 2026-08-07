@@ -1,0 +1,83 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8010:8010"
+    environment:
+      TURSO_DATABASE_URL: ${TURSO_DATABASE_URL:-file:/data/tracker.db}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
+      CRON_SECRET: ${CRON_SECRET:-local-cron-secret}
+      OPS_SECRET: ${OPS_SECRET:-local-ops-secret}
+    volumes:
+      - tracker-data:/data
+      - ./docs/data:/app/docs/data:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/status', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  test:
+    profiles:
+      - test
+    build: .
+    command: pytest -q
+    environment:
+      TURSO_DATABASE_URL: file:/tmp/test.db
+      TURSO_AUTH_TOKEN: ""
+      CRON_SECRET: local-cron-secret
+      OPS_SECRET: local-ops-secret
+    volumes:
+      - .:/app
+
+  newman:
+    profiles:
+      - smoke
+    image: postman/newman:alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: postman/tunisia-outage-tracker.postman_collection.json
+        target: /etc/newman/collection.json
+        read_only: true
+      - type: bind
+        source: postman/environment.example.json
+        target: /etc/newman/environment.json
+        read_only: true
+    command:
+      - run
+      - /etc/newman/collection.json
+      - --environment
+      - /etc/newman/environment.json
+
+  newman-security:
+    profiles:
+      - smoke
+    image: postman/newman:alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: postman/tunisia-outage-tracker-security-smoke.postman_collection.json
+        target: /etc/newman/collection.json
+        read_only: true
+      - type: bind
+        source: postman/environment.example.json
+        target: /etc/newman/environment.json
+        read_only: true
+    command:
+      - run
+      - /etc/newman/collection.json
+      - --environment
+      - /etc/newman/environment.json
+
+volumes:
+  tracker-data:

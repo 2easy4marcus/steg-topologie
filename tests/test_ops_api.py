@@ -60,6 +60,32 @@ def test_ops_jobs_and_events_return_safe_paginated_data(monkeypatch):
     assert "ops-secret" not in combined
 
 
+def test_ops_summary_requires_secret(monkeypatch):
+    monkeypatch.setattr(main, "OPS_SECRET", "ops-secret")
+    client = TestClient(main.app)
+
+    assert client.get("/api/internal/ops/summary").status_code == 401
+    assert client.get(
+        "/api/internal/ops/summary", headers={"X-Ops-Secret": "wrong"}
+    ).status_code == 401
+
+
+def test_ops_summary_returns_metrics_without_secrets(monkeypatch):
+    monkeypatch.setattr(main, "OPS_SECRET", "ops-secret")
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/api/internal/ops/summary", headers={"X-Ops-Secret": "ops-secret"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "sample_count" in body
+    assert "status_counts" in body
+    assert "headers" not in response.text.lower()
+    assert "ops-secret" not in response.text
+
+
 def test_ops_limits_are_bounded(monkeypatch):
     monkeypatch.setattr(main, "OPS_SECRET", "ops-secret")
     client = TestClient(main.app)

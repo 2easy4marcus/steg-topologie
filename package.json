@@ -1,0 +1,12 @@
+{
+  "name": "tunisia-outage-tracker-contracts",
+  "private": true,
+  "scripts": {
+    "export:openapi": "python3 scripts/export_openapi.py",
+    "generate:postman": "node scripts/generate_postman.mjs",
+    "smoke": "docker compose --profile smoke run --rm newman && docker compose --profile smoke run --rm newman-security"
+  },
+  "devDependencies": {
+    "openapi-to-postmanv2": "5.0.0"
+  }
+}

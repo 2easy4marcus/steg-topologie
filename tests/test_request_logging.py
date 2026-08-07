@@ -63,3 +63,27 @@ def test_request_log_includes_optional_operation_correlation(
     assert record["cluster_run_id"] == "run-1"
     assert "X-Cron-Secret" not in json.dumps(record)
 
+
+def test_auth_failure_logs_no_secret_fingerprint(monkeypatch, capsys):
+    client = TestClient(main.app)
+    monkeypatch.setattr(main, "CRON_SECRET", "super-secret-value")
+
+    client.post(
+        "/api/internal/scrape",
+        headers={"X-Cron-Secret": "wrong-guess"},
+    )
+    output = capsys.readouterr().out
+
+    # No cron_auth_failed fingerprint event; no secret value/length/hash.
+    assert "cron_auth_failed" not in output
+    assert "fingerprint" not in output
+    assert "super-secret-value" not in output
+    assert "wrong-guess" not in output
+    record = json.loads(
+        [line for line in output.splitlines() if line.startswith("{")][-1]
+    )
+    assert record["status"] == 401
+    assert record["route"] == "/api/internal/scrape"
+    assert "expected" not in record
+    assert "received" not in record
+

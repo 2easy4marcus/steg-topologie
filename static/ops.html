@@ -74,6 +74,18 @@
       <article class="card" data-status-card><h2>Préparation du modèle</h2><div id="readiness"></div></article>
       <article class="card" data-status-card><h2>Santé opérationnelle</h2><div id="health"></div></article>
     </div>
+    <section aria-labelledby="ops-diag-title" style="margin-top:28px;">
+      <h2 id="ops-diag-title" style="font-size:1.1rem;">Diagnostics internes</h2>
+      <p style="color:var(--dim);font-size:.85rem;">Réservé aux opérateurs. Le secret reste en mémoire de session uniquement.</p>
+      <form id="ops-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0;">
+        <input id="ops-secret" type="password" autocomplete="off"
+               placeholder="Secret OPS" aria-label="Secret OPS"
+               style="flex:1;min-width:200px;padding:9px 12px;border:1px solid var(--border);border-radius:10px;">
+        <button type="submit" style="padding:9px 16px;border:none;border-radius:10px;background:var(--primary);color:#fff;font-weight:700;cursor:pointer;">Charger</button>
+      </form>
+      <div id="ops-status" class="status-line" aria-live="polite"></div>
+      <article class="card" hidden id="ops-card"><h2>Métriques des requêtes</h2><div id="ops-metrics"></div></article>
+    </section>
   </main>
   <footer>Les identifiants de requête peuvent être copiés pour retrouver une exécution dans les journaux Render.</footer>
 
@@ -164,6 +176,49 @@ async function refresh() {
 }
 
 refresh();
+
+// -- Internal diagnostics: secret held in sessionStorage only, sent as header.
+async function loadOpsSummary() {
+  const secret = sessionStorage.getItem("ops_secret");
+  const statusEl = document.getElementById("ops-status");
+  const card = document.getElementById("ops-card");
+  if (!secret) return;
+  statusEl.textContent = "Chargement des diagnostics…";
+  try {
+    const res = await fetch("/api/internal/ops/summary", {
+      headers: { "x-ops-secret": secret }
+    });
+    if (!res.ok) {
+      if (res.status === 401) sessionStorage.removeItem("ops_secret");
+      throw new Error(String(res.status));
+    }
+    const s = await res.json();
+    const sc = s.status_counts || {};
+    simpleCard("ops-metrics", "ok", [
+      ["Échantillons", s.sample_count],
+      ["p50 (ms)", s.p50_ms],
+      ["p95 (ms)", s.p95_ms],
+      ["2xx", sc["2xx"]],
+      ["4xx", sc["4xx"]],
+      ["5xx", sc["5xx"]]
+    ]);
+    card.hidden = false;
+    statusEl.textContent = "Diagnostics actualisés.";
+  } catch (e) {
+    card.hidden = true;
+    statusEl.textContent = "Impossible de charger les diagnostics (secret invalide ?).";
+  }
+}
+
+document.getElementById("ops-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = document.getElementById("ops-secret");
+  if (input.value) sessionStorage.setItem("ops_secret", input.value);
+  input.value = "";
+  loadOpsSummary();
+});
+
+loadOpsSummary();  // restore within the same session if a secret is present
 </script>
 </body>
 </html>

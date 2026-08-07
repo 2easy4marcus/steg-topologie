@@ -7,3 +7,23 @@ server.log
 .DS_Store
 .pytest_cache/
 .worktrees/
+.env
+.superpowers/
+docs/tunisia-*.osm.pbf
+data/processed/
+.venv/
+node_modules/
+build/.postman-generated.json
+
+# Raw source datasets in docs/data/ have unverified licenses and stay local
+# only; the manifest (sources.yaml) and its README are what gets committed.
+docs/data/*.geojson
+docs/data/*.json
+docs/data/*.xls
+docs/data/*.pdf
+!docs/data/sources.yaml
+!docs/data/README.md
+
+# Derived private topology snapshots (docs/PRIVATE_TOPOLOGY.md). The patterns
+# above only match direct children of docs/data/, so this needs its own line.
+docs/data/derived/

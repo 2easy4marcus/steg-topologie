@@ -20,6 +20,11 @@ EVENT_MESSAGES = {
     "build_validated": ("info", "Evidence build validated."),
     "build_activated": ("info", "Evidence build activated."),
     "cluster_started": ("info", "Cluster run started."),
+    "cluster_validated": ("info", "Cluster run validated."),
+    "cluster_activation_refused": (
+        "warning",
+        "Cluster run refused activation.",
+    ),
     "cluster_activated": ("info", "Cluster run activated."),
     "job_completed": ("info", "Job completed."),
     "job_failed": ("error", "Job failed."),

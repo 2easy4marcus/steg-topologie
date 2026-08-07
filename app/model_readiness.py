@@ -5,17 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 
 from . import db
-
-MIN_VALID_NOTICES = 30
-MIN_DISTINCT_OUTAGE_DATES = 15
-MIN_LOCALITIES = 10
-MIN_REPEATED_PAIRS = 20
-MIN_ACTIVE_OK_RATIO = 0.80
-MAX_LARGEST_NOTICE_PAIR_SHARE = 0.20
-
-MIN_RECENT_PARSE_SUCCESS_RATIO = 0.80
-RECENT_PARSE_WINDOW_DAYS = 30
-MAX_SCRAPE_AGE_HOURS = 48
+from .model.config import CONFIG
 
 
 class ReadinessSignal(BaseModel):
@@ -77,42 +67,42 @@ def evaluate(
         _minimum_signal(
             "valid_notices",
             metrics["valid_notices"],
-            MIN_VALID_NOTICES,
-            "Independent notices with at least two canonical localities.",
+            CONFIG.min_valid_notices,
+            "Notices contributing at least one scoped locality pair.",
         ),
         _minimum_signal(
             "distinct_outage_dates",
             metrics["distinct_outage_dates"],
-            MIN_DISTINCT_OUTAGE_DATES,
+            CONFIG.min_distinct_dates,
             "Distinct source outage dates represented by valid notices.",
         ),
         _minimum_signal(
             "unique_localities",
             metrics["unique_localities"],
-            MIN_LOCALITIES,
+            CONFIG.min_localities,
             "Distinct canonical localities in the active evidence build.",
         ),
         _minimum_signal(
             "repeated_pairs",
             metrics["repeated_pairs"],
-            MIN_REPEATED_PAIRS,
-            "Pairs supported by at least two distinct notices.",
+            CONFIG.min_repeated_pairs,
+            "Pairs supported by at least two distinct outage dates.",
         ),
         _minimum_signal(
             "active_ok_ratio",
             metrics["active_ok_ratio"],
-            MIN_ACTIVE_OK_RATIO,
+            CONFIG.min_active_ok_ratio,
             "Share of active valid parses without warnings.",
         ),
         _maximum_signal(
             "largest_notice_pair_share",
             metrics["largest_notice_pair_share"],
-            MAX_LARGEST_NOTICE_PAIR_SHARE,
-            "Largest single-notice share of all notice-pair observations.",
+            CONFIG.max_largest_notice_share,
+            "Largest single-notice share of all scoped pair observations.",
         ),
     ]
 
-    cutoff = now - timedelta(days=RECENT_PARSE_WINDOW_DAYS)
+    cutoff = now - timedelta(days=CONFIG.recent_parse_window_days)
     operational = db.operational_health_metrics(cutoff.isoformat())
     last_scrape = operational["last_successful_scrape_at"]
     scrape_age = None
@@ -123,16 +113,16 @@ def evaluate(
         _minimum_signal(
             "recent_parse_success_ratio",
             operational["recent_parse_success_ratio"],
-            MIN_RECENT_PARSE_SUCCESS_RATIO,
+            CONFIG.min_recent_parse_ratio,
             "Latest parse attempts for recently selected snapshots.",
         ),
         ReadinessSignal(
             key="scrape_freshness",
             current=scrape_age,
-            required=MAX_SCRAPE_AGE_HOURS,
+            required=CONFIG.max_scrape_age_hours,
             operator="<=",
             passed=scrape_age is not None
-            and scrape_age <= MAX_SCRAPE_AGE_HOURS,
+            and scrape_age <= CONFIG.max_scrape_age_hours,
             explanation="Hours since the last successful scheduled scrape.",
         ),
     ]

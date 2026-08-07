@@ -1,0 +1,15 @@
+{
+  "name": "Tunisia Outage Tracker local",
+  "values": [
+    {
+      "key": "baseUrl",
+      "value": "http://app:8010",
+      "enabled": true
+    },
+    {
+      "key": "opsSecret",
+      "value": "",
+      "enabled": true
+    }
+  ]
+}

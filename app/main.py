@@ -43,9 +43,20 @@ from . import import_official
 from . import model_readiness
 from . import observability
 from .governorates import GOVERNORATE_NAMES, GOVERNORATES
-import hashlib
+from .request_metrics import (
+    RequestMetric,
+    current_db_metrics,
+    metrics,
+    reset_db_metrics,
+)
 
-app = FastAPI(title="Tunisia Outage Tracker")
+app = FastAPI(
+    title="Tunisia Outage Tracker",
+    version="2.0.0",
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
@@ -56,17 +67,28 @@ async def request_metadata(request: Request, call_next):
     request_id = supplied if _REQUEST_ID_RE.fullmatch(supplied) else uuid4().hex
     request.state.request_id = request_id
     started = time.perf_counter()
+    reset_db_metrics()
     response = await call_next(request)
+    duration_ms = round((time.perf_counter() - started) * 1000, 3)
     response.headers["X-Request-ID"] = request_id
     route = request.scope.get("route")
     route_template = getattr(route, "path", request.url.path)
+    db_metric = current_db_metrics()
+    metrics.record(RequestMetric(
+        method=request.method,
+        route=route_template,
+        status=response.status_code,
+        duration_ms=duration_ms,
+        db_duration_ms=db_metric["duration_ms"],
+        db_errors=db_metric["errors"],
+    ))
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "request_id": request_id,
         "method": request.method,
         "route": route_template,
         "status": response.status_code,
-        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+        "duration_ms": duration_ms,
     }
     for header, key in (
         ("X-Job-ID", "job_id"),
@@ -109,15 +131,10 @@ def verify_cron_secret(x_cron_secret: str = Header(None)):
     if not CRON_SECRET or not hmac.compare_digest(
         x_cron_secret or "", CRON_SECRET
     ):
-        print(json.dumps({
-            "event": "cron_auth_failed",
-            "expected": _secret_debug(CRON_SECRET),
-            "received": _secret_debug(x_cron_secret),
-        }))
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing X-Cron-Secret",)
-            
+
 
 def verify_ops_secret(x_ops_secret: str = Header(None)):
     if not OPS_SECRET:
@@ -128,13 +145,6 @@ def verify_ops_secret(x_ops_secret: str = Header(None)):
         raise HTTPException(
             status_code=401, detail="Invalid or missing X-Ops-Secret"
         )
-def _secret_debug(value: str | None) -> dict:
-    value = value or ""
-    return {
-        "present": bool(value),
-        "length": len(value),
-        "fingerprint": hashlib.sha256(value.encode()).hexdigest()[:12],
-    }
 
 
 def _decode_cursor(cursor: str | None):
@@ -524,6 +534,13 @@ def get_cooccurrences():
         for r in db.list_cooccurrences()
     ]
     return CooccurrencesResponse(edges=edges)
+
+
+from .api import docs as docs_api  # noqa: E402
+from .api import ops as ops_api  # noqa: E402
+
+app.include_router(ops_api.create_router(verify_ops_secret))
+docs_api.install(app, verify_ops_secret)
 
 
 # ------------------------------------------------------------ static site --

@@ -1,0 +1,10 @@
+.git
+.env
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+docs/tunisia-*.osm.pbf
+.superpowers/
+data/processed/
+.venv/

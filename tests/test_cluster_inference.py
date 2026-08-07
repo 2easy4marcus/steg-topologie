@@ -1,5 +1,6 @@
 # tests/test_cluster_inference.py
-from app import db, cluster_inference, model_readiness
+from app import db, cluster_inference, evidence_pipeline, model_readiness
+from tests.test_model_builds import _active_notice
 
 
 def test_ppmi_graph_weights_known_fixture():
@@ -108,26 +109,21 @@ def test_recluster_refuses_run_when_model_quality_fails(monkeypatch):
 
 
 def test_recluster_persists_source_build_and_algorithm(monkeypatch):
-    db.create_model_build("build-1", "2026-07-26T10:00:00Z")
-    with db.get_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO build_locality_counts(build_id, locality, notice_count)
-            VALUES ('build-1', 'A', 30), ('build-1', 'B', 30)
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO build_cooccurrences(
-                build_id, locality_a, locality_b, notice_count,
-                distinct_date_count
-            ) VALUES ('build-1', 'A', 'B', 10, 10)
-            """
-        )
-    db.complete_model_build("build-1", "2026-07-26T10:01:00Z", 30, 2, 1)
-    db.activate_completed_model_build("build-1")
-    db.upsert_locality("A", lat=1.0, lng=1.0)
-    db.upsert_locality("B", lat=2.0, lng=2.0)
+    # Build through the real pipeline: V2 reads the pinned snapshot
+    # (build_notice_parses / build_locality_observations /
+    # build_pair_observations), so hand-written build_cooccurrences rows are
+    # no longer a sufficient fixture.
+    subregion = "جهة صفاقس"
+    _active_notice("n1", [("A", subregion), ("B", subregion)], "2026-07-20")
+    _active_notice("n2", [("A", subregion), ("B", subregion)], "2026-07-21")
+    _active_notice("n3", [("C", subregion), ("D", subregion)], "2026-07-22")
+    _active_notice("n4", [("C", subregion), ("D", subregion)], "2026-07-23")
+    build_id = evidence_pipeline.build_model_evidence(
+        created_at="2026-07-26T10:00:00Z"
+    )
+    for name in ("A", "B", "C", "D"):
+        db.upsert_locality(name, lat=1.0, lng=1.0)
+
     monkeypatch.setattr(
         cluster_inference.model_readiness,
         "evaluate",
@@ -141,8 +137,9 @@ def test_recluster_persists_source_build_and_algorithm(monkeypatch):
     active = db.active_cluster_run()
 
     assert result["status"] == "ok"
-    assert active["build_id"] == "build-1"
-    assert active["algorithm_version"] == "ppmi-louvain-v1"
+    assert active["build_id"] == build_id
+    assert active["algorithm_version"] == "evidence-weighted-louvain-v2"
+    assert result["localities_clustered"] == 4
 
     repeated = cluster_inference.run_recluster()
     assert repeated["status"] == "already_done"

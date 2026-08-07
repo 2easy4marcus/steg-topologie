@@ -1,0 +1,165 @@
+# Source manifest for the Evidence Model V2 canonical geography.
+#
+# Two top-level collections, mirroring app/data/models.py:
+#   sources:   logical DatasetSource records (identity, ownership, policy)
+#   artifacts: immutable SourceArtifact records (path, checksum, size),
+#              each pointing back at a `sources:` entry via `source_id`.
+#
+# `retrieved_at` / `registered_at` below are LOCAL REGISTRATION timestamps
+# (when this manifest entry was written), not proven original download
+# dates -- see README.md. Every source is kept `private_research` until its
+# original URL and license are independently verified, except the OSM
+# extract, whose ODbL-1.0 license is already well-established.
+#
+# Verify with: python scripts/validate_sources.py docs/data/sources.yaml
+# (real-file checksum verification only runs when STEG_SOURCE_ROOT is set).
+
+sources:
+  - source_id: tunisia-delegations
+    title: Tunisia delegations administrative boundaries
+    owner: unverified_local_copy
+    geographic_coverage: Tunisia
+    publication_class: private_research
+    refresh_policy: manual
+    schema_version: "1"
+    acquisition_description: >-
+      Locally held GeoJSON/TopoJSON pair of Tunisia's delegation-level
+      administrative boundaries. Original publisher, acquisition date, and
+      license are not yet independently verified.
+
+  - source_id: tunisia-electoral-constituencies
+    title: Tunisia electoral constituencies boundaries
+    owner: unverified_local_copy
+    geographic_coverage: Tunisia
+    publication_class: private_research
+    refresh_policy: excluded_from_model
+    schema_version: "1"
+    acquisition_description: >-
+      Locally held GeoJSON of Tunisia's electoral constituency boundaries.
+      Registered for provenance only -- not consumed by the canonical
+      geography importer.
+
+  - source_id: steg-service-units
+    title: STEG districts and agencies directory
+    owner: STEG
+    geographic_coverage: Tunisia
+    temporal_coverage: "2015"
+    publication_class: private_research
+    refresh_policy: manual
+    schema_version: "1"
+    acquisition_description: >-
+      Locally held legacy .xls export listing STEG district/agency offices
+      with contact numbers and, for some rows, coordinates.
+
+  - source_id: blackout-report-2014
+    title: Independent commission report extract on the 2014 blackout
+    owner: independent_commission
+    geographic_coverage: Tunisia
+    temporal_coverage: "2014-08-31"
+    publication_class: private_research
+    refresh_policy: immutable
+    schema_version: "1"
+    acquisition_description: >-
+      Extract of the independent commission's final report on the August
+      2014 national blackout.
+
+  - source_id: tunisia-boundary
+    title: Tunisia national boundary
+    owner: unverified_local_copy
+    geographic_coverage: Tunisia
+    publication_class: private_research
+    refresh_policy: manual
+    schema_version: "1"
+    acquisition_description: >-
+      Locally held GeoJSON of Tunisia's national boundary polygon.
+
+  - source_id: osm-tunisia-20260725
+    title: OpenStreetMap Tunisia PBF snapshot
+    owner: OpenStreetMap contributors
+    geographic_coverage: Tunisia
+    temporal_coverage: "2026-07-25"
+    license_id: ODbL-1.0
+    publication_class: private_research
+    refresh_policy: manual
+    schema_version: "1"
+    acquisition_description: >-
+      Local PBF extract from OpenStreetMap covering Tunisia, dated
+      2026-07-25.
+
+artifacts:
+  # Canonical geography artifact: the importer parses this one. 272
+  # features, each with a globally-unique adm_id.
+  - artifact_id: tunisia-delegations-geojson
+    source_id: tunisia-delegations
+    relative_path: docs/data/delegations.geojson
+    checksum_sha256: 52b3846c35131f108c0b403bd9241b737cd6cf013b8cfe9a036dc253a047afbb
+    byte_size: 3225728
+    retrieved_at: 2026-07-30T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/geo+json
+    schema_version: "1"
+
+  # Sibling artifact, same logical geography, NOT parsed by the importer:
+  # this TopoJSON has 271 objects vs. the GeoJSON's 272 features. The
+  # disagreement is registered, not silently merged or averaged away -- see
+  # README.md.
+  - artifact_id: tunisia-delegations-topojson
+    source_id: tunisia-delegations
+    relative_path: docs/data/delegations.json
+    checksum_sha256: 79eb5f83d3d210ebfb683a6ed83502d8bca66fb3a291fe535b057a1803328e1f
+    byte_size: 514802
+    retrieved_at: 2026-07-30T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/json
+    schema_version: "1"
+
+  - artifact_id: tunisia-electoral-constituencies-geojson
+    source_id: tunisia-electoral-constituencies
+    relative_path: docs/data/tncirconscriptions.geojson
+    checksum_sha256: 3dbcd110b3a77df24042cf5611b2c5d1db6041ee5613547b92288feb3a9e2829
+    byte_size: 2094217
+    retrieved_at: 2026-07-30T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/geo+json
+    schema_version: "1"
+
+  - artifact_id: steg-service-units-xls
+    source_id: steg-service-units
+    relative_path: docs/data/tnlistedistrictsteg.xls
+    checksum_sha256: cd131678b605ddd48c2ba7295aab170af8370e0623f9c0a71f4629f567262ac8
+    byte_size: 40960
+    retrieved_at: 2026-07-30T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/vnd.ms-excel
+    schema_version: "1"
+
+  - artifact_id: blackout-report-2014-pdf
+    source_id: blackout-report-2014
+    relative_path: docs/data/extraitrapportfinaldelacommissionblackout2014.pdf
+    checksum_sha256: 44b8829801505ec2c56188cedc3eb8d94056b80737f0d33b635cdf7d616e5cad
+    byte_size: 1421690
+    retrieved_at: 2026-07-30T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/pdf
+    schema_version: "1"
+
+  - artifact_id: tunisia-boundary-geojson
+    source_id: tunisia-boundary
+    relative_path: docs/data/tunisia.geojson
+    checksum_sha256: 7bf3933b892378aaf878c8e8954d084b9f9e655635c67b3fb0002e00c8a76e07
+    byte_size: 28176
+    retrieved_at: 2026-07-30T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/geo+json
+    schema_version: "1"
+
+  - artifact_id: osm-tunisia-20260725-pbf
+    source_id: osm-tunisia-20260725
+    relative_path: docs/tunisia-260725.osm.pbf
+    checksum_sha256: 85a5ddd1faa5e093ae34337b1c1699f7d4713aaaf25b4288c04f2fd23a4007af
+    byte_size: 83880659
+    retrieved_at: 2026-07-25T00:00:00Z
+    registered_at: 2026-07-30T00:00:00Z
+    media_type: application/vnd.openstreetmap-pbf
+    schema_version: "1"
+    license_id: ODbL-1.0
