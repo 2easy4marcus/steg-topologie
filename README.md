@@ -122,8 +122,12 @@ pytest -q                                          # or on the host
 ```
 
 Tests use an isolated temporary local file DB per test (see
-`tests/conftest.py`) — they never touch your real `tracker.db`. The one
-expected skip needs Node.js plus `npm install` for the Postman generator.
+`tests/conftest.py`) — they never touch your real `tracker.db`.
+
+Two tests skip themselves when their tooling is absent, which is expected:
+the accessibility test needs `playwright`, and the Postman-generation test
+needs Node.js plus `npm install`. On the host that is normally one skip; in
+the container it is two, because the image has no Node.js.
 
 **Checking the source registry:**
 

@@ -65,8 +65,10 @@ most recent samples.
 **It is in-memory and bounded, and it does not survive a restart.** The ring
 holds the last 1000 requests (`app/request_metrics.py`); older ones are
 dropped. A sample is a method, route template, status, and two durations —
-never a URL with its query values, a request or response body, or a header.
-Nothing here is written to the database or to the logs.
+never a query string, a request or response body, or a header. Requests that
+matched no route (404s) record the requested path instead of a template, so a
+scan of that list shows what someone probed for. Nothing here is written to
+the database or to the logs.
 
 So: it answers "is the service slow or erroring *right now*", and it is the
 wrong tool for anything historical. Render's free tier sleeps the service,

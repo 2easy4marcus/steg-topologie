@@ -172,9 +172,11 @@ DELETE FROM asset_candidate_scores;
 DELETE FROM asset_candidate_runs;
 ```
 
-Order matters: the scores trigger requires an existing experimental parent
-run. Nothing public depends on either table, so this is safe at any time.
-Leave the `sources.yaml` entry in place — it is the provenance record for a
+`PRAGMA foreign_keys` is 0 on this deployment and the guards are `BEFORE
+INSERT` triggers, so nothing enforces the delete order — but delete the scores
+first anyway, so a partial failure leaves orphaned parents rather than
+orphaned scores. Nothing public depends on either table, so this is safe at
+any time. Leave the `sources.yaml` entry in place — it is the provenance record for a
 file you may re-acquire, and removing it only makes the next extraction refuse
 to run.
 
