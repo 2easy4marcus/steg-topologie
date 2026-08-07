@@ -388,3 +388,19 @@ def test_cluster_run_memberships_reads_a_run_by_id():
     )
 
     assert db.cluster_run_memberships("run-1") == {3: {"A", "B"}, 9: {"C"}}
+
+
+def test_lineage_run_reference_is_guarded_on_update_too():
+    _run("run-9")
+    db.write_cluster_lineage(
+        "run-9",
+        "run-8",
+        [{"cluster_id": 0, "previous_cluster_id": 1,
+          "jaccard_similarity": 0.8, "role": "inherited"}],
+    )
+
+    # BEFORE INSERT never fires for a plain UPDATE, so without the twin the
+    # guarded reference is free to be rewritten to a run that does not exist.
+    with db.get_conn() as conn:
+        with pytest.raises(Exception, match="unknown run"):
+            conn.execute("UPDATE cluster_lineage SET run_id = 'ghost'")

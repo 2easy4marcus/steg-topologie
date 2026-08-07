@@ -122,3 +122,30 @@ BEGIN
         THEN RAISE(ABORT, 'cluster_validation_runs references unknown run')
     END;
 END;
+
+-- INSERT twins. BEFORE INSERT does not fire for a plain UPDATE or for
+-- ON CONFLICT DO UPDATE, and PRAGMA foreign_keys is 0, so without these the
+-- run reference each row is guarded on can still be rewritten to a run that
+-- does not exist.
+
+CREATE TRIGGER guard_cluster_lineage_update_references
+BEFORE UPDATE OF run_id ON cluster_lineage
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM cluster_runs WHERE run_id = NEW.run_id
+        )
+        THEN RAISE(ABORT, 'cluster_lineage references unknown run')
+    END;
+END;
+
+CREATE TRIGGER guard_cluster_validation_runs_update_references
+BEFORE UPDATE OF run_id ON cluster_validation_runs
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM cluster_runs WHERE run_id = NEW.run_id
+        )
+        THEN RAISE(ABORT, 'cluster_validation_runs references unknown run')
+    END;
+END;

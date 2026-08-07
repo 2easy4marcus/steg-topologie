@@ -438,6 +438,53 @@ def test_scores_cannot_be_stored_against_an_insufficient_evidence_run():
         )
 
 
+def test_a_scored_run_cannot_be_updated_out_of_experimental():
+    """The insert guard's other half.
+
+    BEFORE INSERT does not fire for a plain UPDATE, so the guard that stops
+    scores being written against a non-experimental run said nothing about
+    demoting a run that already has them -- leaving exactly the state this
+    migration's header says the database refuses to hold.
+    """
+    run_id, build_id = _seed_cluster_run()
+    db.record_candidate_run(
+        "cand-1",
+        cluster_run_id=run_id,
+        build_id=build_id,
+        source_snapshot_id=SNAPSHOT_ID,
+        config_version=CONFIG.version,
+        scoring_version=SCORING_VERSION,
+        radius_km=CANDIDATE_RADIUS_KM,
+        status="experimental",
+        created_at="2026-07-30T01:00:00Z",
+    )
+    db.write_candidate_scores(
+        "cand-1",
+        0,
+        rank_candidates(
+            [_features()],
+            independent_dates=2,
+            geography_accepted=True,
+            source_registered=True,
+        ).candidates,
+        {"a": {"min_rank": 1, "max_rank": 1}},
+    )
+
+    with db.get_conn() as conn:
+        with pytest.raises(Exception, match="not an experimental run"):
+            conn.execute(
+                "UPDATE asset_candidate_runs SET status = 'failed' "
+                "WHERE run_id = 'cand-1'"
+            )
+        # Rewriting a parent reference is guarded on update too, not only on
+        # insert.
+        with pytest.raises(Exception, match="unknown cluster run"):
+            conn.execute(
+                "UPDATE asset_candidate_runs SET cluster_run_id = 'ghost' "
+                "WHERE run_id = 'cand-1'"
+            )
+
+
 def _pilot_stack(dates=("2026-07-20", "2026-07-21")):
     """A pinned build, geocoded localities, and a cluster run over them."""
     _canonical_geography({"A": "unit-a", "B": "unit-a"})

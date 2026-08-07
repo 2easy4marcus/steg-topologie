@@ -134,3 +134,59 @@ BEGIN
         )
     END;
 END;
+
+-- INSERT twins. BEFORE INSERT does not fire for a plain UPDATE or for
+-- ON CONFLICT DO UPDATE, and PRAGMA foreign_keys is 0, so an insert-only
+-- guard states an invariant the database does not actually hold.
+
+CREATE TRIGGER guard_asset_candidate_runs_update_references
+BEFORE UPDATE OF cluster_run_id, build_id ON asset_candidate_runs
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM cluster_runs WHERE run_id = NEW.cluster_run_id
+        )
+        THEN RAISE(ABORT, 'asset_candidate_runs references unknown cluster run')
+    END;
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM model_builds WHERE build_id = NEW.build_id
+        )
+        THEN RAISE(ABORT, 'asset_candidate_runs references unknown model build')
+    END;
+END;
+
+CREATE TRIGGER guard_asset_candidate_scores_update_requires_experimental_run
+BEFORE UPDATE OF run_id ON asset_candidate_scores
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM asset_candidate_runs
+            WHERE run_id = NEW.run_id AND status = 'experimental'
+        )
+        THEN RAISE(
+            ABORT, 'asset_candidate_scores run is not an experimental run'
+        )
+    END;
+END;
+
+-- The same invariant seen from the parent. The insert guard above says scores
+-- may exist only for an experimental run, but nothing stopped
+-- `UPDATE asset_candidate_runs SET status = 'failed'` from leaving scored rows
+-- behind a run that is no longer experimental -- precisely the state this
+-- migration's header says the database refuses to hold. A run that has lost
+-- its ranking must drop the ranking first.
+CREATE TRIGGER guard_asset_candidate_runs_update_keeps_scores_experimental
+BEFORE UPDATE OF status ON asset_candidate_runs
+BEGIN
+    SELECT CASE
+        WHEN NEW.status <> 'experimental'
+             AND EXISTS (
+                 SELECT 1 FROM asset_candidate_scores
+                 WHERE run_id = OLD.run_id
+             )
+        THEN RAISE(
+            ABORT, 'asset_candidate_scores run is not an experimental run'
+        )
+    END;
+END;

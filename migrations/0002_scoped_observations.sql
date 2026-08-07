@@ -166,3 +166,57 @@ BEGIN
         THEN RAISE(ABORT, 'quality_gate_results references unknown build')
     END;
 END;
+
+-- INSERT twins. SQLite fires BEFORE INSERT for INSERT OR REPLACE, but not for
+-- a plain UPDATE or for ON CONFLICT DO UPDATE, so an insert-only guard leaves
+-- the reference it protects free to be rewritten to a parent that does not
+-- exist. With PRAGMA foreign_keys at 0 these triggers are the whole integrity
+-- model, so each one needs both halves.
+
+CREATE TRIGGER guard_build_notice_parses_update_references
+BEFORE UPDATE OF build_id ON build_notice_parses
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM model_builds WHERE build_id = NEW.build_id
+        )
+        THEN RAISE(ABORT, 'build_notice_parses references unknown build')
+    END;
+END;
+
+CREATE TRIGGER guard_build_locality_observations_update_references
+BEFORE UPDATE OF build_id, notice_id ON build_locality_observations
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM build_notice_parses
+            WHERE build_id = NEW.build_id AND notice_id = NEW.notice_id
+        )
+        THEN RAISE(ABORT,
+                   'build_locality_observations references unpinned notice')
+    END;
+END;
+
+CREATE TRIGGER guard_build_pair_observations_update_references
+BEFORE UPDATE OF build_id, notice_id ON build_pair_observations
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM build_notice_parses
+            WHERE build_id = NEW.build_id AND notice_id = NEW.notice_id
+        )
+        THEN RAISE(ABORT,
+                   'build_pair_observations references unpinned notice')
+    END;
+END;
+
+CREATE TRIGGER guard_quality_gate_results_update_references
+BEFORE UPDATE OF build_id ON quality_gate_results
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM model_builds WHERE build_id = NEW.build_id
+        )
+        THEN RAISE(ABORT, 'quality_gate_results references unknown build')
+    END;
+END;
