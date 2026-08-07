@@ -4,7 +4,9 @@ Every score here is meaningless without the rule that produced it and the
 identities it was produced under, so the report carries both: build, config,
 algorithm, validation version, and random seed, plus the definition of each
 metric. A score that cannot be computed is reported as None with a reason,
-never as a substituted default.
+never as a substituted default -- except ``mean_membership_agreement``, whose
+field is non-optional and so reports 0.0 with a reason instead. Read that one
+against ``unmeasured_reasons`` before treating a zero as a measurement.
 
 Two choices follow the hardening amendments directly:
 

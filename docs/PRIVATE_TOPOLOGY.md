@@ -115,16 +115,25 @@ Ordering is enforced: geography bounds the candidate set first, then topology
 and service features score what survives. An asset no cluster locality is near
 is not a low-scoring candidate; it is not a candidate.
 
-Six features, all in [0, 1], all measured:
+Six features, all in [0, 1], all measured. **Every share below is measured
+against the *accepted* localities** — the cluster members that have a measured
+geography (`spatial_confidence > 0`) — not against all cluster members. A
+cluster member whose geography was never measured is not in any denominator:
 
 | Feature | Weight | Definition |
 |---|---|---|
-| `outage_fit` | 0.35 | Share of the cluster's localities within `radius_km` of the asset |
-| `topology_consistency` | 0.25 | Share of the cluster reached by the asset's whole connected component. Zero when the component contains no line — an isolated point has no topology |
+| `outage_fit` | 0.35 | Share of the accepted localities within `radius_km` of the asset |
+| `topology_consistency` | 0.25 | Share of the accepted localities reached by the asset's whole connected component. Zero when the component contains no line — an isolated point has no topology |
 | `service_prior` | 0.15 | Purity of the STEG service units of the covered localities. Zero when none has a measured unit |
 | `distance_score` | 0.10 | `1 − mean distance / radius` over covered localities |
 | `temporal_support` | 0.10 | Cluster's independent outage dates, saturating at `CONFIG.recurrence_saturation_dates`. Cluster-level, so identical for every candidate in a run |
 | `completeness` | 0.05 | Share of three inputs actually present: a voltage tag, a line in the component, a service unit on every covered locality. Below 0.5 the candidate is dropped |
+
+**Two gates drop candidates before ranking, not one.** Besides the
+completeness floor in the table, an asset with no topology *and* no service
+signal (`topology_consistency <= 0 and service_prior <= 0`) is dropped
+outright — the amendment requires at least one topology or service signal, and
+an asset with neither is a coordinate, not evidence.
 
 Every run stores its `build_id`, `cluster_run_id`, `source_snapshot_id`,
 `config_version`, `scoring_version`, and the `radius_km` it actually scored

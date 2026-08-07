@@ -36,7 +36,7 @@ Two scope kinds exist:
 | `scope_kind` | Meaning | `scope_confidence` |
 |---|---|---|
 | `subregion` | One STEG table cell, identified by its ordinal | 1.0 |
-| whole-notice fallback | The notice had no cell structure to read | 0.35 |
+| `notice_fallback` | The notice had no cell structure to read | 0.35 |
 
 The fallback pairs across what would have been cell boundaries, exactly as
 parser version 1 did. It is admitted at low confidence rather than discarded.
@@ -139,8 +139,10 @@ one run are disjoint, so two eligible edges sharing an endpoint can both clear
 enforcement and deterministic tie-breaking, not a better total. Below it
 (0.30, say) strict divergence returns, and the threshold is configuration.
 
-**Lineage keeps every eligible predecessor relationship**, not just the
-matched one, with a role of `inherited`, `split`, `merged`, or `related` — a
+**Lineage keeps every *overlapping* predecessor**, not only the eligible ones
+and not just the matched one: any non-zero membership intersection is
+recorded, and an overlap below the threshold gets the role `related`. Roles
+are `inherited`, `split`, `merged`, or `related` — a
 split or merge is exactly the case where the single inherited id loses
 information.
 
@@ -179,6 +181,14 @@ score computed under a different seed or budget is not comparable to another.
 
 Not a substituted default. `unmeasured_reasons` in the stored report names why,
 e.g. "fewer than two distinct outage dates, so no holdout exists".
+
+**`mean_membership_agreement` is the exception.** The field is non-optional, so
+when no bootstrap replicate is scorable it reports `0.0` rather than `None`,
+with the reason recorded alongside. A zero there means *unmeasured* as often as
+it means unstable, so always check
+`unmeasured_reasons["mean_membership_agreement"]` before reading it as a
+measurement. This is the one score an operator looks at first, which is exactly
+why the distinction matters.
 
 **Known limitation, shipped:** `geography_baseline` and
 `service_unit_baseline` are **always `None` today**. Clustering by canonical

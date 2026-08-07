@@ -47,7 +47,7 @@ manual setup needed. If you ever see a database error on startup, just delete
 `tracker.db` and restart; it'll be recreated empty.
 
 **Bootstrapping a database is `init_db()`, not `apply_all()`.** Migrations
-0002 and 0004 `ALTER` tables owned by the base schema, so the migration
+0002, 0003 and 0004 `ALTER` tables owned by the base schema, so the migration
 directory alone no longer builds a database from nothing. `init_db()` creates
 the schema and then applies the migrations in order, and it is the only
 supported path.

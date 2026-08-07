@@ -64,8 +64,9 @@ most recent samples.
 
 **It is in-memory and bounded, and it does not survive a restart.** The ring
 holds the last 1000 requests (`app/request_metrics.py`); older ones are
-dropped. A sample is a method, route template, status, and two durations —
-never a query string, a request or response body, or a header. Requests that
+dropped. A sample is a method, route template, status, two durations, and a
+database-error count — never a query string, a request or response body, or a
+header. Requests that
 matched no route (404s) record the requested path instead of a template, so a
 scan of that list shows what someone probed for. Nothing here is written to
 the database or to the logs.
@@ -229,8 +230,8 @@ makes old and new decisions look comparable when they are not.
 
 ## Bootstrapping a database
 
-Use `init_db()`. Migrations 0002 and 0004 `ALTER` tables owned by the base
-schema (`SCHEMA_STATEMENTS`), so `migrations.apply_all()` on its own no longer
+Use `init_db()`. Migrations 0002, 0003 and 0004 `ALTER` tables owned by the
+base schema (`SCHEMA_STATEMENTS`), so `migrations.apply_all()` on its own no longer
 builds a database from nothing. `init_db()` creates the schema and then
 applies the migrations in order; it is the only supported bootstrap.
 
