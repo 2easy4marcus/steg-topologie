@@ -5,6 +5,14 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch: {}
 
+# One daily run: scrape, check readiness, recluster only if both readiness
+# groups pass. Two things deliberately absent, and they must stay absent:
+#
+#   * the historical backfill (POST /api/internal/backfill) is manual only --
+#     it is long-running and re-reads pages this job already has;
+#   * the private Sfax asset-candidate pilot is never triggered from here. It
+#     reads a local-only topology extract and writes private tables (see
+#     docs/PRIVATE_TOPOLOGY.md); it has no HTTP route and must not get one.
 jobs:
   evidence-pipeline:
     runs-on: ubuntu-latest

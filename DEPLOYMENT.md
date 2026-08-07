@@ -1,6 +1,8 @@
 # Deployment Guide — Tunisia Outage Tracker
 
-This walks through going from the project folder on your computer to a live, publicly reachable site with automatic hourly scraping. No git repo exists yet on your machine — this starts from scratch.
+This walks through going from the project folder on your computer to a live, publicly reachable site with an automatic daily scrape. No git repo exists yet on your machine — this starts from scratch.
+
+For a local run, skip all of this: `cp .env.example .env && docker compose up --build` (see [README.md](README.md)).
 
 ## 0. Prerequisites
 
@@ -55,9 +57,9 @@ Keep both values somewhere safe for the next steps.
      frontend JavaScript and do not reuse `CRON_SECRET`.
 4. Deploy. Render will build and give you a URL like `https://tunisia-outage-tracker.onrender.com`.
 
-Note: Render's free tier sleeps the service after 15 minutes of no traffic and wakes it back up on the next request (a few seconds of delay). This is fine here — the DB lives in Turso, not on Render's disk, so nothing is lost between sleeps, and the hourly cron below will also naturally keep it from sleeping for too long at a time.
+Note: Render's free tier sleeps the service after 15 minutes of no traffic and wakes it back up on the next request (a few seconds of delay). This is fine here — the DB lives in Turso, not on Render's disk, so nothing is lost between sleeps.
 
-## 4. Wire up GitHub Actions (the automatic hourly scrape + daily recluster)
+## 4. Wire up GitHub Actions (the daily scrape → readiness → recluster job)
 
 The workflow file (`.github/workflows/scrape.yml`) is already in the repo. It just needs two secrets configured on GitHub:
 
@@ -65,12 +67,14 @@ The workflow file (`.github/workflows/scrape.yml`) is already in the repo. It ju
 2. Add `APP_URL` = your Render URL from step 3 (e.g. `https://tunisia-outage-tracker.onrender.com`, no trailing slash).
 3. Add `CRON_SECRET` = the exact same random string you set on Render in step 3.
 
-That's it — the workflow will now run automatically: hourly it hits `/api/internal/scrape`, and once a day it hits `/api/internal/recluster`. You can also trigger it manually any time from the GitHub repo's Actions tab (it has `workflow_dispatch` enabled) to test it immediately rather than waiting for the next scheduled hour.
+That's it — the workflow now runs once a day (02:00 UTC) as a single job: `POST /api/internal/scrape`, then `GET /api/model-readiness`, then `POST /api/internal/recluster` **only if both readiness groups pass**. A skipped recluster step means the model is not ready yet, not that something broke. Each step prints its HTTP status, duration, and request ID so a failure can be traced into the Render logs — see [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+You can trigger it manually any time from the Actions tab (`workflow_dispatch` is enabled). The historical backfill (`POST /api/internal/backfill`) is deliberately **not** in the workflow — it is long-running and manual. Neither is the private candidate pilot, which has no HTTP route at all.
 
 ## 5. Verify it's actually working
 
 - Visit your Render URL in a browser — you should see the site, with the official-notices/reports tabs (likely empty until the first scrape runs).
-- After the first scrape (wait up to an hour, or trigger it manually from the Actions tab), reload the site — official notices should start appearing.
+- After the first scrape (wait for the daily run, or trigger it manually from the Actions tab), reload the site — official notices should start appearing.
 - The "Afficher les groupes de réseau inférés (bêta)" map toggle will stay empty until at least 30 notices and 10 distinct localities have accumulated (the data floor described in the design spec) — that'll take some real time of the scraper running, this is expected, not a bug.
 - To sanity-check the endpoints directly:
   ```bash
@@ -80,8 +84,9 @@ That's it — the workflow will now run automatically: hourly it hits `/api/inte
 
 ## Ongoing costs
 
-Everything above is free at this project's scale: Render's free web service tier, Turso's free tier (5GB storage, 500M reads/10M writes per month), and GitHub Actions' free minutes for public repos. If the repo is private, GitHub Actions free minutes are limited per month but hourly + daily cron here uses very little of that allowance.
-# Evidence pipeline rollout
+Everything above is free at this project's scale: Render's free web service tier, Turso's free tier (5GB storage, 500M reads/10M writes per month), and GitHub Actions' free minutes for public repos. If the repo is private, GitHub Actions free minutes are limited per month but one daily job uses very little of that allowance.
+
+## Evidence pipeline rollout
 
 The evidence migration is dry-run-first. Use this production order:
 

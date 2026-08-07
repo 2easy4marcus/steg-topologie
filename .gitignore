@@ -17,6 +17,10 @@ build/.postman-generated.json
 
 # Raw source datasets in docs/data/ have unverified licenses and stay local
 # only; the manifest (sources.yaml) and its README are what gets committed.
+# Derived private topology snapshots (docs/PRIVATE_TOPOLOGY.md). The patterns
+# below only match direct children of docs/data/, so this needs its own line.
+docs/data/derived/
+
 docs/data/*.geojson
 docs/data/*.json
 docs/data/*.xls
