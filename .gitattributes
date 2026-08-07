@@ -1,0 +1,4 @@
+# Migration checksums are SHA-256 over raw file bytes (app/migrations.py), so a
+# CRLF checkout would rewrite every byte and turn startup into a hard
+# MigrationChecksumError against a database that already recorded the LF form.
+migrations/*.sql text eol=lf

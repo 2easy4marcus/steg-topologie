@@ -155,9 +155,14 @@ confirm they contain none of the following:
 - raw STEG HTML;
 - arbitrary exception messages or stack traces.
 
-Also confirm `/ops.html` neither requests `/api/internal/` nor provides a
-secret-entry field. Request IDs, timestamps, bounded counters, artifact IDs,
-approved event messages, and stable public error codes are allowed.
+`/ops.html` does request `/api/internal/ops/summary`, and it does provide a
+secret-entry field. Both are intended. The operator types the OPS secret into
+that field; it is held in `sessionStorage` for the tab's lifetime and sent as
+an `x-ops-secret` header, and a 401 clears it. No secret is ever embedded in
+the page, so the shipped page carries none. What to confirm instead is that
+the secret is still operator-typed rather than baked into the HTML or into a
+build step. Request IDs, timestamps, bounded counters, artifact IDs, approved
+event messages, and stable public error codes are allowed.
 
 ## API contract artifacts and smoke tests
 

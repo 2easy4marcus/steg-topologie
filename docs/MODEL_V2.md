@@ -152,6 +152,19 @@ information.
 `db.activate_completed_cluster_run` refuses to activate a run that has no
 completed validation run and a stored `published` decision.
 
+**Validation is advisory.** The activation gate proves that validation *ran*
+and that its run completed; it never compares any score to a threshold. No
+threshold exists — `CONFIG` has none, and nothing in `app/` writes a `failed`
+validation status. A run with a poor `mean_membership_agreement` still
+activates. Reading these numbers and deciding what to do about them is an
+operator's job, not the pipeline's.
+
+Every graph scored here is built by `graph.build_graph_for_build`, the same
+builder that produced the served partition, restricted to the subset the
+metric needs. Validation owns no graph builder of its own, and it scores the
+partition the run published rather than a re-derivation of it — otherwise the
+numbers below describe a model nobody was served.
+
 Every score travels with the identities that produced it — build, config,
 algorithm, validation version, random seed, bootstrap budget — plus
 `METRIC_DEFINITIONS`, the definition of each metric, in the stored report. A
@@ -169,9 +182,9 @@ score computed under a different seed or budget is not comparable to another.
   notices, so no outage day appears on both sides. A locality absent from
   training is **excluded from recall rather than counted as a miss** — the
   model was never given the chance to place it.
-- **Baselines** — `raw_cooccurrence_baseline` clusters the same pairs with all
-  confidences forced to 1.0, which is what the weighting has to beat to be
-  worth anything.
+- **Baselines** — `raw_cooccurrence_baseline` clusters the same pairs with
+  every confidence component forced to 1.0 and geography back to unmeasured,
+  which is what the weighting has to beat to be worth anything.
 - **Largest-notice influence** — agreement after removing the single
   highest-contributing notice.
 - **Config sensitivity** — agreement after raising `min_edge_distinct_dates`
