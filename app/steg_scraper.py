@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.steg.com.tn"
 HOMEPAGE_URL = f"{BASE_URL}/fr"
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 
 HEADERS = {
     "User-Agent": (

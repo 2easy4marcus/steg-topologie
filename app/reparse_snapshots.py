@@ -4,7 +4,7 @@ import argparse
 import json
 from datetime import date, datetime, timezone
 
-from . import db, locality_dedup, steg_scraper
+from . import db, evidence_pipeline, locality_dedup, steg_scraper
 from .evidence_models import (
     ParsedLocality,
     ParsedNoticeEvidence,
@@ -18,6 +18,16 @@ def _evidence(row):
         if row["notice_date_iso"]
         else None
     )
+    # Parses written before scope ordinals existed have none stored, so cell
+    # boundaries are reconstructed from the stored subregion names. See
+    # evidence_pipeline.infer_scope_ordinals for the known limit.
+    scope_ordinals = [
+        item["scope_ordinal"] for item in row["localities"]
+    ]
+    if any(value is None for value in scope_ordinals):
+        scope_ordinals = evidence_pipeline.infer_scope_ordinals(
+            [item["subregion_name"] for item in row["localities"]]
+        )
     return ParsedNoticeEvidence(
         notice_id=row["notice_id"],
         snapshot_id=row["latest_snapshot_id"],
@@ -36,8 +46,9 @@ def _evidence(row):
                 ),
                 subregion_name=item["subregion_name"],
                 ordinal=item["ordinal"],
+                scope_ordinal=scope_ordinal,
             )
-            for item in row["localities"]
+            for item, scope_ordinal in zip(row["localities"], scope_ordinals)
         ],
         warnings=json.loads(row["parse_warnings"] or "[]"),
     )

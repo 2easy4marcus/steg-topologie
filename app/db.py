@@ -503,7 +503,7 @@ def save_parse_with_localities(evidence, parsed_at: str) -> bool:
             return False
         if evidence.localities:
             # One multi-row INSERT so the locality set is all-or-nothing.
-            rows = ", ".join(["(?, ?, ?, ?, ?)"] * len(evidence.localities))
+            rows = ", ".join(["(?, ?, ?, ?, ?, ?)"] * len(evidence.localities))
             params: list = []
             for locality in evidence.localities:
                 params.extend(
@@ -513,13 +513,14 @@ def save_parse_with_localities(evidence, parsed_at: str) -> bool:
                         locality.raw_name,
                         locality.canonical_name,
                         locality.subregion_name,
+                        locality.scope_ordinal,
                     ]
                 )
             conn.execute(
                 f"""
                 INSERT INTO notice_localities(
                     parse_id, ordinal, raw_name, canonical_name,
-                    subregion_name
+                    subregion_name, scope_ordinal
                 ) VALUES {rows}
                 """,
                 params,
@@ -813,9 +814,137 @@ def active_cluster_run_id():
         return row["active_cluster_run_id"] if row else None
 
 
-def populate_model_build(build_id: str) -> None:
-    """Populate one inactive build from last-known-valid active parses."""
+def pin_build_snapshot(build_id: str) -> None:
+    """Freeze this build's source population before anything measures it.
+
+    Everything downstream -- scoped pairs, marginals, counts, readiness --
+    reads only `build_notice_parses` and `build_locality_observations`. A
+    parser activation that lands after this call therefore cannot change what
+    the build observed, which is what stops a build from ever reporting a
+    pair count larger than one of its own marginals.
+
+    Idempotent: a retried build clears its own pinned rows first, so
+    re-running converges on the same population instead of failing on a
+    primary-key conflict.
+    """
     with get_conn() as conn:
+        for table in (
+            "build_locality_observations",
+            "build_notice_parses",
+        ):
+            conn.execute(
+                f"DELETE FROM {table} WHERE build_id = ?", [build_id]
+            )
+        conn.execute(
+            """
+            INSERT INTO build_notice_parses(
+                build_id, notice_id, parse_id, outage_date, parse_status
+            )
+            SELECT ?, ns.notice_id, ns.active_parse_id, np.notice_date_iso,
+                   np.parse_status
+            FROM notice_state ns
+            JOIN notice_parses np ON np.parse_id = ns.active_parse_id
+            """,
+            [build_id],
+        )
+        # A locality's scope is the source table cell it came from. Cells are
+        # identified by ordinal, never by heading text, so duplicate headings
+        # stay distinct and an unheaded cell is still its own scope. Only a
+        # parse with no cell structure at all falls back to whole-notice
+        # scoping.
+        conn.execute(
+            """
+            INSERT INTO build_locality_observations(
+                build_id, notice_id, scope_kind, scope_ordinal, scope_name,
+                canonical_name
+            )
+            SELECT DISTINCT bnp.build_id, bnp.notice_id,
+                   CASE WHEN nl.scope_ordinal IS NULL
+                        THEN 'notice_fallback' ELSE 'subregion' END,
+                   COALESCE(nl.scope_ordinal, 0),
+                   NULLIF(TRIM(COALESCE(nl.subregion_name, '')), ''),
+                   nl.canonical_name
+            FROM build_notice_parses bnp
+            JOIN notice_localities nl ON nl.parse_id = bnp.parse_id
+            WHERE bnp.build_id = ?
+            """,
+            [build_id],
+        )
+
+
+def populate_scoped_observations(build_id: str, config) -> None:
+    """Pair localities only inside a shared scope, with separate confidences.
+
+    Confidence components are stored side by side and never blended.
+    `geographic_confidence` stays NULL because no geography has been joined at
+    this point in the pipeline -- defaulting it to 1.0 would fabricate
+    evidence the build does not have.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM build_pair_observations WHERE build_id = ?",
+            [build_id],
+        )
+        conn.execute(
+            """
+            INSERT INTO build_pair_observations(
+                build_id, notice_id, outage_date, scope_kind, scope_ordinal,
+                scope_name, locality_a, locality_b, parse_confidence,
+                scope_confidence, canonicalization_confidence,
+                temporal_confidence, geographic_confidence, config_version
+            )
+            SELECT a.build_id, a.notice_id, bnp.outage_date, a.scope_kind,
+                   a.scope_ordinal, a.scope_name,
+                   a.canonical_name, b.canonical_name,
+                   CASE WHEN bnp.parse_status = 'ok' THEN ? ELSE ? END,
+                   CASE WHEN a.scope_kind = 'subregion' THEN ? ELSE ? END,
+                   ?,
+                   CASE WHEN bnp.outage_date IS NULL THEN NULL ELSE 1.0 END,
+                   NULL,
+                   ?
+            FROM build_locality_observations a
+            JOIN build_locality_observations b
+              ON b.build_id = a.build_id
+             AND b.notice_id = a.notice_id
+             AND b.scope_kind = a.scope_kind
+             AND b.scope_ordinal = a.scope_ordinal
+             AND a.canonical_name < b.canonical_name
+            JOIN build_notice_parses bnp
+              ON bnp.build_id = a.build_id
+             AND bnp.notice_id = a.notice_id
+            WHERE a.build_id = ?
+            """,
+            [
+                config.ok_parse_confidence,
+                config.warning_parse_confidence,
+                config.subregion_scope_confidence,
+                config.notice_fallback_confidence,
+                config.canonicalization_confidence,
+                config.version,
+                build_id,
+            ],
+        )
+
+
+def build_scoped_cooccurrences(build_id: str) -> list:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM build_pair_observations
+            WHERE build_id = ?
+            ORDER BY locality_a, locality_b, scope_kind, scope_ordinal
+            """,
+            [build_id],
+        ).fetchall()
+
+
+def populate_model_build(build_id: str) -> None:
+    """Aggregate the build's marginals and edges from its pinned snapshot."""
+    with get_conn() as conn:
+        for table in ("build_cooccurrences", "build_locality_counts"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE build_id = ?", [build_id]
+            )
         conn.execute(
             """
             INSERT INTO build_locality_counts(
@@ -823,44 +952,32 @@ def populate_model_build(build_id: str) -> None:
             )
             SELECT ?, canonical_name, COUNT(DISTINCT notice_id)
             FROM (
-                SELECT DISTINCT ns.notice_id, nl.canonical_name
-                FROM notice_state ns
-                JOIN notice_localities nl
-                  ON nl.parse_id = ns.active_parse_id
+                SELECT DISTINCT notice_id, canonical_name
+                FROM build_locality_observations
+                WHERE build_id = ?
             )
             GROUP BY canonical_name
             """,
-            [build_id],
+            [build_id, build_id],
         )
+        # distinct_date_count ignores NULL outage dates by design: a notice
+        # whose date could not be parsed is not evidence of a distinct outage
+        # day, so such a pair reports 0 distinct dates and cannot satisfy
+        # config.min_edge_distinct_dates.
         conn.execute(
             """
             INSERT INTO build_cooccurrences(
                 build_id, locality_a, locality_b, notice_count,
                 distinct_date_count, first_observed_on, last_observed_on
             )
-            WITH notice_names AS (
-                SELECT DISTINCT ns.notice_id, nl.canonical_name,
-                       np.notice_date_iso
-                FROM notice_state ns
-                JOIN notice_parses np ON np.parse_id = ns.active_parse_id
-                JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
-            ),
-            observations AS (
-                SELECT a.notice_id, a.canonical_name AS locality_a,
-                       b.canonical_name AS locality_b,
-                       a.notice_date_iso
-                FROM notice_names a
-                JOIN notice_names b
-                  ON b.notice_id = a.notice_id
-                 AND a.canonical_name < b.canonical_name
-            )
             SELECT ?, locality_a, locality_b, COUNT(DISTINCT notice_id),
-                   COUNT(DISTINCT notice_date_iso),
-                   MIN(notice_date_iso), MAX(notice_date_iso)
-            FROM observations
+                   COUNT(DISTINCT outage_date),
+                   MIN(outage_date), MAX(outage_date)
+            FROM build_pair_observations
+            WHERE build_id = ?
             GROUP BY locality_a, locality_b
             """,
-            [build_id],
+            [build_id, build_id],
         )
 
 
@@ -868,10 +985,11 @@ def model_build_counts(build_id: str):
     with get_conn() as conn:
         notice_count = conn.execute(
             """
-            SELECT COUNT(DISTINCT ns.notice_id) AS c
-            FROM notice_state ns
-            JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
+            SELECT COUNT(DISTINCT notice_id) AS c
+            FROM build_locality_observations
+            WHERE build_id = ?
             """,
+            [build_id],
         ).fetchone()["c"]
         locality_count = conn.execute(
             """
@@ -936,26 +1054,30 @@ def model_readiness_metrics(build_id: str | None):
             "active_ok_ratio": 0.0,
             "largest_notice_pair_share": 0.0,
         }
+    # Every metric derives from the build's own pinned, scoped observations.
+    # A notice counts as valid only if it produced at least one *scoped* pair,
+    # and influence is measured over scoped observations, so two localities
+    # named in different table cells no longer inflate either number the way a
+    # whole-notice Cartesian join did.
     with get_conn() as conn:
         notice_metrics = conn.execute(
             """
             WITH valid AS (
-                SELECT ns.notice_id, ns.active_parse_id, np.parse_status,
-                       np.notice_date_iso,
-                       COUNT(DISTINCT nl.canonical_name) AS locality_count
-                FROM notice_state ns
-                JOIN notice_parses np ON np.parse_id = ns.active_parse_id
-                JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
-                GROUP BY ns.notice_id, ns.active_parse_id,
-                         np.parse_status, np.notice_date_iso
-                HAVING COUNT(DISTINCT nl.canonical_name) >= 2
+                SELECT DISTINCT bpo.notice_id, bnp.parse_status,
+                       bnp.outage_date
+                FROM build_pair_observations bpo
+                JOIN build_notice_parses bnp
+                  ON bnp.build_id = bpo.build_id
+                 AND bnp.notice_id = bpo.notice_id
+                WHERE bpo.build_id = ?
             )
             SELECT COUNT(*) AS valid_notices,
-                   COUNT(DISTINCT notice_date_iso) AS distinct_dates,
+                   COUNT(DISTINCT outage_date) AS distinct_dates,
                    COALESCE(AVG(CASE WHEN parse_status = 'ok'
                                      THEN 1.0 ELSE 0.0 END), 0) AS ok_ratio
             FROM valid
-            """
+            """,
+            [build_id],
         ).fetchone()
         build_metrics = conn.execute(
             """
@@ -963,35 +1085,25 @@ def model_readiness_metrics(build_id: str | None):
                 (SELECT COUNT(*) FROM build_locality_counts
                  WHERE build_id = ?) AS unique_localities,
                 (SELECT COUNT(*) FROM build_cooccurrences
-                 WHERE build_id = ? AND notice_count >= 2) AS repeated_pairs
+                 WHERE build_id = ?
+                   AND distinct_date_count >= 2) AS repeated_pairs
             """,
             [build_id, build_id],
         ).fetchone()
         share = conn.execute(
             """
-            WITH valid_names AS (
-                SELECT DISTINCT ns.notice_id, nl.canonical_name
-                FROM notice_state ns
-                JOIN notice_localities nl ON nl.parse_id = ns.active_parse_id
-                WHERE (
-                    SELECT COUNT(DISTINCT nl2.canonical_name)
-                    FROM notice_localities nl2
-                    WHERE nl2.parse_id = ns.active_parse_id
-                ) >= 2
-            ),
-            pair_counts AS (
-                SELECT a.notice_id, COUNT(*) AS pair_count
-                FROM valid_names a
-                JOIN valid_names b
-                  ON b.notice_id = a.notice_id
-                 AND a.canonical_name < b.canonical_name
-                GROUP BY a.notice_id
+            WITH pair_counts AS (
+                SELECT notice_id, COUNT(*) AS pair_count
+                FROM build_pair_observations
+                WHERE build_id = ?
+                GROUP BY notice_id
             )
             SELECT CASE WHEN COALESCE(SUM(pair_count), 0) = 0 THEN 0.0
                         ELSE CAST(MAX(pair_count) AS REAL) / SUM(pair_count)
                    END AS largest_share
             FROM pair_counts
-            """
+            """,
+            [build_id],
         ).fetchone()
     return {
         "valid_notices": notice_metrics["valid_notices"],
@@ -1001,6 +1113,116 @@ def model_readiness_metrics(build_id: str | None):
         "active_ok_ratio": notice_metrics["ok_ratio"],
         "largest_notice_pair_share": share["largest_share"] or 0.0,
     }
+
+
+def _gate_rows(build_id, readiness, config_version, evaluated_at):
+    for section in (readiness.model_quality, readiness.operational_health):
+        for signal in section.signals:
+            if signal.passed:
+                reason = f"{signal.key}_pass"
+            elif signal.current is None:
+                reason = f"{signal.key}_not_measured"
+            elif signal.operator == "<=":
+                reason = f"{signal.key}_above_maximum"
+            else:
+                reason = f"{signal.key}_below_minimum"
+            yield [
+                build_id,
+                signal.key,
+                "pass" if signal.passed else "fail",
+                signal.current,
+                signal.required,
+                reason,
+                config_version,
+                evaluated_at,
+            ]
+
+
+def record_quality_gates(
+    build_id: str, readiness, config_version: str, evaluated_at: str
+) -> None:
+    """Store one row per readiness signal, tagged with its configuration."""
+    rows = list(_gate_rows(build_id, readiness, config_version, evaluated_at))
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM quality_gate_results WHERE build_id = ?", [build_id]
+        )
+        if not rows:
+            return
+        placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(rows))
+        conn.execute(
+            f"""
+            INSERT INTO quality_gate_results(
+                build_id, gate_key, outcome, measured_value, required_value,
+                reason_code, config_version, evaluated_at
+            ) VALUES {placeholders}
+            """,
+            [value for row in rows for value in row],
+        )
+
+
+def quality_gate_results(build_id: str) -> list:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM quality_gate_results
+            WHERE build_id = ? ORDER BY gate_key
+            """,
+            [build_id],
+        ).fetchall()
+
+
+_DECISION_REASONS = {
+    "published": "all_gates_pass",
+    "experimental": "operational_gates_failed",
+    "blocked": "model_gates_failed",
+}
+
+
+def record_publication_decision(
+    product_type: str,
+    product_id: str,
+    *,
+    build_id: str | None,
+    decision: str,
+    config_version: str,
+    decided_at: str,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO publication_decisions(
+                product_type, product_id, build_id, decision, reason_code,
+                config_version, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_type, product_id) DO UPDATE SET
+                build_id = excluded.build_id,
+                decision = excluded.decision,
+                reason_code = excluded.reason_code,
+                config_version = excluded.config_version,
+                decided_at = excluded.decided_at
+            """,
+            [
+                product_type,
+                product_id,
+                build_id,
+                decision,
+                _DECISION_REASONS[decision],
+                config_version,
+                decided_at,
+            ],
+        )
+
+
+def publication_decision(product_type: str, product_id: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM publication_decisions
+            WHERE product_type = ? AND product_id = ?
+            """,
+            [product_type, product_id],
+        ).fetchone()
 
 
 def operational_health_metrics(cutoff: str):

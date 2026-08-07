@@ -1,10 +1,20 @@
 from app import db, evidence_pipeline
 
 
+def _scoped(item):
+    """Accept "A", ("A", subregion), or ("A", subregion, scope_ordinal)."""
+    if not isinstance(item, tuple):
+        return item, None, None
+    if len(item) == 2:
+        return item[0], item[1], None
+    return item
+
+
 def _active_notice(
     notice_id: str,
-    localities: list[str],
+    localities: list,
     notice_date: str | None,
+    parse_status: str = "ok",
 ):
     snapshot_id = f"snapshot-{notice_id}"
     parse_id = f"parse-{notice_id}"
@@ -29,19 +39,38 @@ def _active_notice(
                 parse_id, snapshot_id, notice_id, title, notice_date_iso,
                 parser_version, normalization_version, parse_status,
                 parse_warnings, parsed_at
-            ) VALUES (?, ?, ?, ?, ?, '2', '1', 'ok', '[]',
+            ) VALUES (?, ?, ?, ?, ?, '3', '1', ?, '[]',
                       '2026-07-26T10:01:00Z')
             """,
-            [parse_id, snapshot_id, notice_id, notice_id, notice_date],
+            [
+                parse_id,
+                snapshot_id,
+                notice_id,
+                notice_id,
+                notice_date,
+                parse_status,
+            ],
         )
-        for ordinal, locality in enumerate(localities):
+        parsed = [_scoped(item) for item in localities]
+        subregions = [subregion for _, subregion, _ in parsed]
+        inferred = evidence_pipeline.infer_scope_ordinals(subregions)
+        for ordinal, (item, fallback) in enumerate(zip(parsed, inferred)):
+            locality, subregion, scope_ordinal = item
             conn.execute(
                 """
                 INSERT INTO notice_localities(
-                    parse_id, ordinal, raw_name, canonical_name
-                ) VALUES (?, ?, ?, ?)
+                    parse_id, ordinal, raw_name, canonical_name,
+                    subregion_name, scope_ordinal
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                [parse_id, ordinal, locality, locality],
+                [
+                    parse_id,
+                    ordinal,
+                    locality,
+                    locality,
+                    subregion,
+                    fallback if scope_ordinal is None else scope_ordinal,
+                ],
             )
         conn.execute(
             """

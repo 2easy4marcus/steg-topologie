@@ -25,6 +25,33 @@ def processing_identity(
     return hashlib.sha256(value).hexdigest()
 
 
+def infer_scope_ordinals(subregion_names: list) -> list:
+    """Reconstruct cell boundaries from stored subregion names alone.
+
+    Used when a parse is rebuilt from `notice_localities` rows rather than
+    from HTML, which is how `reparse_snapshots` migrates parses written before
+    scope ordinals existed. Localities keep their emission order, so a change
+    of subregion name marks a cell boundary.
+
+    ponytail: two *adjacent* cells that shared the identical heading text
+    merge into one scope here -- exactly the case scope ordinals exist to
+    separate. It is unavoidable without the HTML, and it only affects parses
+    written before this parser version. Upgrade path: re-run the HTML parser
+    over `notice_snapshots.raw_html` instead of calling this.
+    """
+    if all(name is None for name in subregion_names):
+        return [None] * len(subregion_names)
+    ordinals = []
+    scope_ordinal = -1
+    previous = object()
+    for name in subregion_names:
+        if name != previous:
+            scope_ordinal += 1
+            previous = name
+        ordinals.append(scope_ordinal)
+    return ordinals
+
+
 def _normalized_notice_date(raw_date: str | None):
     if not raw_date:
         return None
@@ -50,15 +77,18 @@ def evidence_from_notice(
     raw_entries = []
     subregions = notice.get("subregions") or []
     if subregions:
-        for subregion in subregions:
+        # The cell's position in the table is its scope identity. Cells are
+        # numbered even when their heading is missing or duplicated, so
+        # neither case can collapse two scopes into one.
+        for scope_ordinal, subregion in enumerate(subregions):
             name = subregion.get("name")
             zones = [zone for zone in subregion.get("zones", []) if zone]
             if zones and not name:
                 warnings.append("missing_subregion_header")
-            raw_entries.extend((zone, name) for zone in zones)
+            raw_entries.extend((zone, name, scope_ordinal) for zone in zones)
     else:
         raw_entries.extend(
-            (zone, None) for zone in notice.get("zones", []) if zone
+            (zone, None, None) for zone in notice.get("zones", []) if zone
         )
 
     localities = [
@@ -67,8 +97,11 @@ def evidence_from_notice(
             canonical_name=locality_dedup.resolve_locality(raw_name),
             subregion_name=subregion_name,
             ordinal=ordinal,
+            scope_ordinal=scope_ordinal,
         )
-        for ordinal, (raw_name, subregion_name) in enumerate(raw_entries)
+        for ordinal, (raw_name, subregion_name, scope_ordinal) in enumerate(
+            raw_entries
+        )
     ]
     if not localities:
         warnings.append("empty_locality_list")
@@ -173,6 +206,28 @@ def activate_cluster_run(run_id: str) -> None:
     db.activate_completed_cluster_run(run_id)
 
 
+def _as_datetime(value: str):
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _publication_decision(readiness) -> str:
+    """Map readiness to a publication state.
+
+    The evidence build itself still activates regardless -- operators must be
+    able to inspect an unready build. It is cluster publication that consumes
+    this decision, which is why the decision is stored rather than acted on
+    here.
+    """
+    if not readiness.model_quality.ready:
+        return "blocked"
+    if not readiness.operational_health.ready:
+        return "experimental"
+    return "published"
+
+
 def build_model_evidence(
     *,
     created_at: str,
@@ -180,7 +235,8 @@ def build_model_evidence(
     job_id: str | None = None,
 ) -> str:
     """Create, validate, and atomically activate one immutable build."""
-    from . import observability
+    from . import model_readiness, observability
+    from .model.config import CONFIG
 
     build_id = uuid4().hex
     if job_id:
@@ -188,6 +244,11 @@ def build_model_evidence(
             job_id, "build_started", occurred_at=created_at
         )
     db.create_model_build(build_id, created_at)
+    # Pin this build's source population before measuring anything. Every
+    # later step reads only the pinned rows, so a parser activation landing
+    # mid-build cannot change what this build observed.
+    db.pin_build_snapshot(build_id)
+    db.populate_scoped_observations(build_id, CONFIG)
     db.populate_model_build(build_id)
     db.validate_model_build(build_id)
     if job_id:
@@ -201,6 +262,18 @@ def build_model_evidence(
         notice_count,
         locality_count,
         pair_count,
+    )
+    readiness = model_readiness.evaluate(
+        now=_as_datetime(created_at), build_id=build_id
+    )
+    db.record_quality_gates(build_id, readiness, CONFIG.version, created_at)
+    db.record_publication_decision(
+        "evidence_build",
+        build_id,
+        build_id=build_id,
+        decision=_publication_decision(readiness),
+        config_version=CONFIG.version,
+        decided_at=created_at,
     )
     if activate:
         db.activate_completed_model_build(build_id)

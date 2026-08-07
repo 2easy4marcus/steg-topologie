@@ -19,7 +19,7 @@ def _notice(**overrides):
 
 
 def test_parser_and_normalizer_have_explicit_versions():
-    assert steg_scraper.PARSER_VERSION == "2"
+    assert steg_scraper.PARSER_VERSION == "3"
     assert locality_dedup.NORMALIZATION_VERSION == "1"
 
 
@@ -30,7 +30,7 @@ def test_notice_conversion_preserves_raw_date_and_normalizes_iso():
 
     assert evidence.notice_date_raw == "26/07/2026"
     assert evidence.notice_date_iso == date(2026, 7, 26)
-    assert evidence.parser_version == "2"
+    assert evidence.parser_version == "3"
     assert evidence.normalization_version == "1"
     assert evidence.parse_status is ParseStatus.OK
 

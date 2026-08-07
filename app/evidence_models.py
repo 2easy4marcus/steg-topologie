@@ -29,6 +29,12 @@ class ParsedLocality(BaseModel):
     canonical_name: str
     subregion_name: str | None = None
     ordinal: int = Field(ge=0)
+    # Index of the source table cell this locality came from, stable within a
+    # parse and independent of the cell's heading text. Two cells with the
+    # same heading therefore stay distinct scopes, and an unheaded cell is
+    # still a scope. None means the notice had no cell structure at all (the
+    # list-markup fallback), and the whole notice is treated as one scope.
+    scope_ordinal: int | None = Field(default=None, ge=0)
 
 
 class ParsedNoticeEvidence(BaseModel):

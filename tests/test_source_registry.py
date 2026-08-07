@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from app import db, migrations
+from app import db
 from app.data.models import (
     DatasetSource,
     PublicationClass,
@@ -16,7 +16,10 @@ from app.data.models import (
 def source_registry_db(isolated_db, monkeypatch, tmp_path):
     database_path = tmp_path / "source-registry.db"
     monkeypatch.setattr(db, "DB_URL", f"file:{database_path}")
-    migrations.apply_all()
+    # Bootstrap the same way production does. Migration 0002 alters a table
+    # owned by SCHEMA_STATEMENTS, so migrations alone no longer describe a
+    # complete database.
+    db.init_db()
 
 
 def _dataset_source(**overrides):
