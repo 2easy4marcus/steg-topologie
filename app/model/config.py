@@ -30,6 +30,17 @@ Rationale for the v2.0 values:
   localities sharing a service unit. Geography can only scale an edge outage
   evidence already justified; it never creates one. A pair whose geography was
   never measured gets zero bonus rather than an assumed agreement.
+- ``min_id_inheritance_jaccard`` 0.50 -- a cluster must share more than half
+  its membership with a predecessor to inherit that predecessor's identity.
+  Below it the cluster is a new thing that happens to overlap, and gets a
+  fresh id; the overlap is still recorded as lineage.
+- ``bootstrap_runs`` 50 / ``random_seed`` 0 -- resampling budget for the
+  stability estimate, and the seed that makes a run reproducible. Both are
+  recorded on every stored validation run, because an agreement score is not
+  comparable to another one computed under a different budget or seed.
+- ``temporal_holdout_train_fraction`` 0.80 -- share of distinct outage dates
+  used for training in the holdout evaluation. Dates, not notices, so no
+  outage day can appear on both sides of the split.
 """
 
 from pydantic import BaseModel, Field
@@ -69,6 +80,13 @@ class ModelConfig(BaseModel):
     min_edge_distinct_dates: int = Field(default=2, ge=0)
     recurrence_saturation_dates: int = Field(default=3, gt=0)
     max_geographic_bonus: float = Field(default=0.15, ge=0)
+
+    # Cluster identity and validation.
+    min_id_inheritance_jaccard: float = Field(default=0.50, ge=0, le=1)
+    validation_version: str = "cluster-validation-v1"
+    random_seed: int = 0
+    bootstrap_runs: int = Field(default=50, ge=0)
+    temporal_holdout_train_fraction: float = Field(default=0.80, gt=0, lt=1)
 
 
 CONFIG = ModelConfig()

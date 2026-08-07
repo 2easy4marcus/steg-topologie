@@ -672,15 +672,17 @@ def create_cluster_run(
     build_id: str,
     algorithm_version: str,
     started_at: str,
+    config_version: str | None = None,
 ) -> None:
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO cluster_runs(
-                run_id, build_id, algorithm_version, status, started_at
-            ) VALUES (?, ?, ?, 'running', ?)
+                run_id, build_id, algorithm_version, status, started_at,
+                config_version
+            ) VALUES (?, ?, ?, 'running', ?, ?)
             """,
-            [run_id, build_id, algorithm_version, started_at],
+            [run_id, build_id, algorithm_version, started_at, config_version],
         )
 
 
@@ -763,9 +765,10 @@ def completed_cluster_run_for(
 
 def activate_completed_cluster_run(run_id: str) -> None:
     with get_conn() as conn:
-        # Both guards (run completed, run's build is the active build) live in
-        # the WHERE EXISTS feeding the upsert, so the success path is one
-        # atomic statement.
+        # All four guards (run completed, run's build is the active build, a
+        # completed validation run exists, a published decision is stored)
+        # live in the WHERE EXISTS feeding the upsert, so the success path is
+        # one atomic statement.
         result = conn.execute(
             """
             INSERT INTO cluster_state(singleton_id, active_cluster_run_id)
@@ -778,6 +781,17 @@ def activate_completed_cluster_run(run_id: str) -> None:
                       SELECT ms.active_build_id FROM model_state ms
                       WHERE ms.singleton_id = 1
                   )
+                  AND EXISTS (
+                      SELECT 1 FROM cluster_validation_runs cvr
+                      WHERE cvr.run_id = cr.run_id
+                        AND cvr.status = 'completed'
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM publication_decisions pd
+                      WHERE pd.product_type = 'cluster_run'
+                        AND pd.product_id = cr.run_id
+                        AND pd.decision = 'published'
+                  )
             )
             ON CONFLICT(singleton_id) DO UPDATE SET
                 active_cluster_run_id = excluded.active_cluster_run_id
@@ -786,11 +800,17 @@ def activate_completed_cluster_run(run_id: str) -> None:
         )
         if result.rows_affected > 0:
             return
-        # Failure path only: re-read (read-only) to tell the two guards apart
-        # and raise exactly the error the transactional version raised.
+        # Failure path only: re-read (read-only) to tell the guards apart and
+        # raise exactly the error the transactional version raised. The first
+        # two messages are load-bearing -- callers and tests match on them.
         row = conn.execute(
             """
-            SELECT cr.status, cr.build_id, ms.active_build_id
+            SELECT cr.status, cr.build_id, ms.active_build_id,
+                   (SELECT cvr.status FROM cluster_validation_runs cvr
+                    WHERE cvr.run_id = cr.run_id) AS validation_status,
+                   (SELECT pd.decision FROM publication_decisions pd
+                    WHERE pd.product_type = 'cluster_run'
+                      AND pd.product_id = cr.run_id) AS decision
             FROM cluster_runs cr
             LEFT JOIN model_state ms ON ms.singleton_id = 1
             WHERE cr.run_id = ?
@@ -799,10 +819,155 @@ def activate_completed_cluster_run(run_id: str) -> None:
         ).fetchone()
         if row is None or row["status"] != "completed":
             raise ValueError("cluster run must be completed before activation")
-        # Reached both when the build genuinely differs and (rarely) when a
-        # concurrent writer changed model_state; either way the run is not
-        # provably tied to the active build, so refuse.
-        raise ValueError("cluster run does not reference active build")
+        if row["build_id"] != row["active_build_id"]:
+            # Reached both when the build genuinely differs and (rarely) when
+            # a concurrent writer changed model_state; either way the run is
+            # not provably tied to the active build, so refuse.
+            raise ValueError("cluster run does not reference active build")
+        if row["validation_status"] != "completed":
+            raise ValueError(
+                "cluster run requires a completed validation run"
+            )
+        raise ValueError("cluster run is not published")
+
+
+def reserve_cluster_ids(count: int) -> int:
+    """Reserve `count` cluster ids and return the first one.
+
+    One atomic statement, so two concurrent runs can never be handed the same
+    id. Ids are never reconstructed from MAX(cluster_id): retention deletes
+    cluster_members rows, and a maximum recomputed afterwards would reissue
+    ids that already belonged to something else. Reservations the caller does
+    not use are burned rather than returned.
+    """
+    with get_conn() as conn:
+        if count <= 0:
+            row = conn.execute(
+                "SELECT next_cluster_id FROM cluster_id_allocator "
+                "WHERE singleton_id = 1"
+            ).fetchone()
+            return row["next_cluster_id"]
+        row = conn.execute(
+            """
+            UPDATE cluster_id_allocator
+            SET next_cluster_id = next_cluster_id + ?
+            WHERE singleton_id = 1
+            RETURNING next_cluster_id
+            """,
+            [count],
+        ).fetchone()
+    # RETURNING yields the post-update value; the reserved block starts before.
+    return row["next_cluster_id"] - count
+
+
+def write_cluster_lineage(
+    run_id: str, previous_run_id: str, rows: list
+) -> None:
+    if not rows:
+        return
+    placeholders = ", ".join(["(?, ?, ?, ?, ?, ?)"] * len(rows))
+    params: list = []
+    for row in rows:
+        params.extend(
+            [
+                run_id,
+                row["cluster_id"],
+                previous_run_id,
+                row["previous_cluster_id"],
+                row["jaccard_similarity"],
+                row["role"],
+            ]
+        )
+    with get_conn() as conn:
+        conn.execute(
+            f"""
+            INSERT INTO cluster_lineage(
+                run_id, cluster_id, previous_run_id, previous_cluster_id,
+                jaccard_similarity, role
+            ) VALUES {placeholders}
+            """,
+            params,
+        )
+
+
+def cluster_lineage(run_id: str) -> list:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM cluster_lineage WHERE run_id = ?
+            ORDER BY cluster_id, previous_cluster_id
+            """,
+            [run_id],
+        ).fetchall()
+
+
+def cluster_run_memberships(run_id: str) -> dict:
+    """{cluster_id: {locality, ...}} for one versioned run."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT locality, cluster_id FROM cluster_members WHERE run_id = ?",
+            [run_id],
+        ).fetchall()
+    memberships: dict = {}
+    for row in rows:
+        memberships.setdefault(row["cluster_id"], set()).add(row["locality"])
+    return memberships
+
+
+def record_validation_run(
+    run_id: str,
+    report,
+    *,
+    status: str,
+    evaluated_at: str,
+    split_count: int = 0,
+    merge_count: int = 0,
+) -> None:
+    from .model.validation import report_json
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO cluster_validation_runs(
+                run_id, build_id, config_version, algorithm_version,
+                validation_version, random_seed, bootstrap_runs, status,
+                mean_membership_agreement, held_out_edge_recall,
+                raw_cooccurrence_baseline, geography_baseline,
+                service_unit_baseline, largest_notice_removed_agreement,
+                config_sensitivity_agreement, split_count, merge_count,
+                report_json, evaluated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                run_id,
+                report.build_id,
+                report.config_version,
+                report.algorithm_version,
+                report.validation_version,
+                report.random_seed,
+                report.bootstrap_runs,
+                status,
+                report.mean_membership_agreement,
+                report.held_out_edge_recall,
+                report.raw_cooccurrence_baseline,
+                report.geography_baseline,
+                report.service_unit_baseline,
+                report.largest_notice_removed_agreement,
+                report.config_sensitivity_agreement,
+                split_count,
+                merge_count,
+                report_json(report),
+                evaluated_at,
+            ],
+        )
+
+
+def validation_run(run_id: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM cluster_validation_runs WHERE run_id = ?",
+            [run_id],
+        ).fetchone()
 
 
 def active_cluster_run_id():
@@ -1199,6 +1364,7 @@ def record_publication_decision(
     decision: str,
     config_version: str,
     decided_at: str,
+    reason_code: str | None = None,
 ) -> None:
     with get_conn() as conn:
         conn.execute(
@@ -1219,7 +1385,7 @@ def record_publication_decision(
                 product_id,
                 build_id,
                 decision,
-                _DECISION_REASONS[decision],
+                reason_code or _DECISION_REASONS[decision],
                 config_version,
                 decided_at,
             ],
